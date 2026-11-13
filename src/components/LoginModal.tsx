@@ -1,20 +1,41 @@
 import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { validateRequired } from '../utils/validation'
+import { authConfigurationError } from '../lib/supabase'
+import { signIn } from '../services/auth'
 import Modal from './Modal'
 
 interface LoginModalProps {
   isOpen: boolean
   onClose: () => void
+  onLoginSuccess: () => Promise<void>
 }
 
-export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
+export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginModalProps) {
   const [password, setPassword] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const passwordRef = useRef<HTMLInputElement>(null)
+  const submitting = useRef(false)
 
-  function login(event: FormEvent<HTMLFormElement>) {
+  async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    validateRequired(passwordRef.current!)
+    if (submitting.current || !validateRequired(passwordRef.current!)) return
+    setError(null)
+    if (authConfigurationError) return
+
+    submitting.current = true
+    setPending(true)
+    try {
+      await signIn(password)
+      await onLoginSuccess()
+      setPassword('')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '로그인하지 못했습니다. 다시 시도해 주세요.')
+    } finally {
+      submitting.current = false
+      setPending(false)
+    }
   }
 
   if (!isOpen) return null
@@ -30,12 +51,17 @@ export default function LoginModal({ isOpen, onClose }: LoginModalProps) {
           aria-label="비밀번호"
           autoComplete="current-password"
           value={password}
+          disabled={pending}
           onChange={event => {
             setPassword(event.target.value)
             event.target.setCustomValidity('')
+            setError(null)
           }}
         />
-        <button type="submit" className="btn h30 border borderRad widthFull">로그인</button>
+        {(authConfigurationError || error) && <p role="alert">{authConfigurationError || error}</p>}
+        <button type="submit" className="btn h30 border borderRad widthFull" disabled={pending || !!authConfigurationError}>
+          {pending ? '로그인 중…' : '로그인'}
+        </button>
       </form>
     </Modal>
   )

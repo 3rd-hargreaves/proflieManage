@@ -17,7 +17,13 @@ function initialTheme(): ThemeColors {
   }
 }
 
-export default function EditPage() {
+interface EditPageProps {
+  onLogout: () => Promise<void>
+  signingOut: boolean
+  logoutError: string | null
+}
+
+export default function EditPage({ onLogout, signingOut, logoutError }: EditPageProps) {
   const form = useRef<HTMLFormElement>(null)
   const [theme, setTheme] = useState(initialTheme)
   const [profile, setProfile] = useState<ProfileDraft>({ name: '', statusMessage: '', file: null })
@@ -66,7 +72,11 @@ export default function EditPage() {
   }
 
   return (
-    <main>
+    <main className="flexColumn gapLg">
+      <button className="btn h30 border borderRad" type="button" disabled={signingOut} onClick={onLogout}>
+        {signingOut ? '로그아웃 중…' : '로그아웃'}
+      </button>
+      {logoutError && <p role="alert">{logoutError}</p>}
       <form ref={form} className="flexColumn gapLg" noValidate onSubmit={save}>
         <ThemeEditor value={theme} onChange={(key, value) => setTheme({ ...theme, [key]: value })} />
         <ProfileEditor value={profile} onChange={setProfile} />
