@@ -198,4 +198,9 @@ begin
 end;
 $$;
 
+-- 공개 화면의 프로필·피드 이미지는 같은 버킷의 경로로 구분한다.
+insert into storage.buckets (id, name, public)
+values ('site-images', 'site-images', true)
+on conflict (id) do nothing;
+
 commit;

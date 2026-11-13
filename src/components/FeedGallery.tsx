@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import SiteImage from './SiteImage'
 
 export interface GalleryImage {
   id: string
@@ -25,13 +26,15 @@ export default function FeedGallery({ images, onOpenImage }: FeedGalleryProps) {
       >피드 보기</button>
       <div className="picList gapSm" style={{ display: isOpen ? 'grid' : 'none' }}>
         {images.map(image => (
-          <img
+          <SiteImage
             key={image.id}
             className="pic widthFull"
             src={image.src}
             alt={image.alt}
+            loading="lazy"
+            decoding="async"
             role="button"
-            aria-label={`이미지 ${image.id} 확대`}
+            aria-label={`${image.alt} 확대`}
             tabIndex={isOpen ? 0 : -1}
             onClick={() => onOpenImage(image)}
             onKeyDown={event => {
@@ -42,6 +45,7 @@ export default function FeedGallery({ images, onOpenImage }: FeedGalleryProps) {
             }}
           />
         ))}
+        {images.length === 0 && <p className="card pdLg text3 feedEmpty">등록된 피드 이미지가 없습니다.</p>}
       </div>
       <button
         id="feedBtn"

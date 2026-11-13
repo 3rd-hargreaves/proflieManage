@@ -178,11 +178,18 @@ textarea { height: 200px; padding: var(--px-sm); }
 
     border: 2px solid var(--background-color);
     border-radius: 50%;
+    object-fit: cover;
 }
 
+.profileName, .profileMessage, .sectionText { overflow-wrap: anywhere; }
+.profileMessage, .sectionText { white-space: pre-wrap; }
+
 /* 키워드 */
+.keywordList { flex-wrap: wrap; }
 .keyword
 {
+    max-width: 100%;
+    overflow-wrap: anywhere;
     padding: 0 var(--px-md);
 
     background-color: var(--sub-color);
@@ -193,11 +200,13 @@ textarea { height: 200px; padding: var(--px-sm); }
 .picList
 {
     display: none;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.feedEmpty { grid-column: 1 / -1; }
 .pic
 {
     aspect-ratio: 1/1;
+    object-fit: cover;
     cursor: pointer;
 }
 .imgModal
@@ -206,6 +215,19 @@ textarea { height: 200px; padding: var(--px-sm); }
     max-width: 90%;
     height: 50%;
     aspect-ratio: 1/1;
+    object-fit: contain;
+}
+
+.imagePlaceholder
+{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--px-sm);
+    background-color: var(--sub-color);
+    font-size: 12px;
+    text-align: center;
+    overflow-wrap: anywhere;
 }
 
 /* 테마 */
