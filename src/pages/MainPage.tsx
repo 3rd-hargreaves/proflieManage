@@ -11,7 +11,13 @@ const images: GalleryImage[] = Array.from({ length: 9 }, (_, index) => ({
   alt: '',
 }))
 
-export default function MainPage() {
+interface MainPageProps {
+  isAdmin: boolean
+  onOpenEditor: () => void
+  onLoginSuccess: () => Promise<void>
+}
+
+export default function MainPage({ isAdmin, onOpenEditor, onLoginSuccess }: MainPageProps) {
   const [modal, setModal] = useState<'login' | GalleryImage | null>(null)
   const closeModal = useCallback(() => setModal(null), [])
 
@@ -24,8 +30,11 @@ export default function MainPage() {
       <button
         type="button"
         className="btn border borderRad edit"
-        aria-label="관리자 로그인 열기"
-        onClick={() => setModal('login')}
+        aria-label={isAdmin ? '수정 화면 열기' : '관리자 로그인 열기'}
+        onClick={() => {
+          if (isAdmin) onOpenEditor()
+          else setModal('login')
+        }}
       >✎</button>
       <main className="flexColumn gapLg">
         <div className="flexColumn alignCenter gapMd">
@@ -51,7 +60,7 @@ export default function MainPage() {
         </div>
         <FeedGallery images={images} onOpenImage={setModal} />
       </main>
-      <LoginModal isOpen={modal === 'login'} onClose={closeModal} />
+      <LoginModal isOpen={modal === 'login'} onClose={closeModal} onLoginSuccess={onLoginSuccess} />
       {modal && modal !== 'login' && <ImageModal image={modal} onClose={closeModal} />}
     </>
   )

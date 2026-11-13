@@ -9,10 +9,12 @@
 - `/`에서 메인 화면, `/edit`에서 수정 화면을 확인한다. 기존 `/manage.html` 주소도 수정 화면으로 연결한다.
 - 모달·피드 열기와 닫기, 클릭한 이미지 확대, 색상 미리보기, 파일명 표시, 피드와 섹션 추가·삭제, 공통 입력 검증을 React 상태와 이벤트로 처리한다.
 - 선택한 이미지의 `File` 객체는 수정 화면의 편집 상태에 보관한다.
-- 로그인은 비밀번호 공란 검사, 저장은 검증 후 임시 알림 단계다. `/edit`은 현재 이식 확인용으로 직접 접근할 수 있다.
-- 다음 작업은 Supabase 데이터·Storage·권한 구성과 실제 인증·조회·저장 연결이다.
+- Supabase 클라이언트와 고정 이메일 로그인, 관리자 UUID 확인, 세션 복원·변경 감지, 로그아웃을 연결했다. `/edit`과 `/manage.html`은 확인된 관리자만 접근할 수 있다.
+- 저장은 검증 후 임시 알림 단계다. 데이터 조회·저장과 Storage 업로드는 후속 단계에서 연결한다.
 
 이식 후 빌드·린트와 브라우저 동작 검증 67개를 통과했다. 390·768·1280px 화면과 긴 파일명 표시도 확인했다.
+
+Supabase 연결 코드는 실제 SDK와 로컬 인증 테스트 서버로 브라우저 검증 19개를 통과했다. 실제 프로젝트의 환경변수를 입력하고 5개 테이블·초기값·RLS를 적용했으며, 공개 키로 5개 테이블의 API 조회를 확인했다. 실제 앱 로그인과 데이터 조회·저장 연결을 이어서 확인한다.
 
 퍼블리싱 원본과 상세 작업 계획은 작업 공간에서 프로젝트 루트의 형제 폴더인 `sketch/`와 `sketch/plan.md`에 둔다.
 
@@ -25,6 +27,25 @@ cd /d C:\WS\ProfileWS\proflieManage
 npm install
 npm run dev
 ```
+
+## Supabase 환경변수
+
+프로젝트 루트의 `.env.local`에 값을 입력한다. 같은 항목을 `.env.example`에도 정리했다.
+
+| 환경변수 | 확인 위치 |
+|---|---|
+| `VITE_SUPABASE_URL` | 프로젝트의 Connect 창에서 Project URL 복사 |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Project Settings → API Keys → Publishable key 복사 |
+| `VITE_ADMIN_EMAIL` | 관리자 Auth 계정 이메일. `dkal1572@naver.com`으로 설정 |
+| `VITE_ADMIN_USER_ID` | Authentication → Users에서 관리자 계정의 User UID 복사 |
+
+URL과 공개 키는 프로젝트의 Connect 창에서도 함께 확인할 수 있다. [Supabase 연결 안내](https://supabase.com/docs/guides/getting-started/api-keys)
+
+`VITE_ADMIN_USER_ID`는 `supabase/schema.sql`의 `private.is_site_admin()`에 지정한 UUID와 동일하게 설정한다. 관리자 이메일·비밀번호는 Supabase Auth 사용자로 설정하고, 사이트에서는 비밀번호만 입력한다.
+
+브라우저용 키는 Publishable key 또는 기존 프로젝트의 `anon` 키를 사용한다. Secret key와 `service_role` 키는 서버 전용이다. `.env.local`은 Git에서 제외한다. [Supabase API 키 안내](https://supabase.com/docs/guides/getting-started/api-keys)
+
+환경변수를 저장한 뒤 개발 서버를 재시작한다. Vercel 배포 시에는 같은 환경변수를 프로젝트 설정에 입력하고 다시 배포한다.
 
 ## 빌드와 린트
 
