@@ -10,11 +10,15 @@
 - 모달·피드 열기와 닫기, 클릭한 이미지 확대, 색상 미리보기, 파일명 표시, 피드와 섹션 추가·삭제, 공통 입력 검증을 React 상태와 이벤트로 처리한다.
 - 선택한 이미지의 `File` 객체는 수정 화면의 편집 상태에 보관한다.
 - Supabase 클라이언트와 고정 이메일 로그인, 관리자 UUID 확인, 세션 복원·변경 감지, 로그아웃을 연결했다. `/edit`과 `/manage.html`은 확인된 관리자만 접근할 수 있다.
-- 저장은 검증 후 임시 알림 단계다. 데이터 조회·저장과 Storage 업로드는 후속 단계에서 연결한다.
+- 메인 화면은 DB의 프로필·섹션·키워드·피드·테마를 조회한다. 목록은 저장된 순서로 표시하고, 캐릭터 이름을 페이지 제목에, 테마색을 CSS 변수에 적용한다.
+- 로딩·조회 오류·재시도·빈 목록과 이미지 표시 실패를 처리한다.
+- 수정 화면의 데이터 채우기·저장과 Storage 업로드는 후속 단계에서 연결한다. 현재 저장 버튼은 검증 후 임시 알림을 표시한다.
 
 이식 후 빌드·린트와 브라우저 동작 검증 67개를 통과했다. 390·768·1280px 화면과 긴 파일명 표시도 확인했다.
 
-Supabase 연결 코드는 실제 SDK와 로컬 인증 테스트 서버로 브라우저 검증 19개를 통과했다. 실제 프로젝트의 환경변수를 입력하고 5개 테이블·초기값·RLS를 적용했으며, 공개 키로 5개 테이블의 API 조회를 확인했다. 실제 앱 로그인과 데이터 조회·저장 연결을 이어서 확인한다.
+Supabase 연결 코드는 실제 SDK와 로컬 인증 테스트 서버로 브라우저 검증 19개를 통과했다. 실제 프로젝트의 환경변수를 입력하고 5개 테이블·초기값·RLS를 적용했으며, 공개 키로 5개 테이블의 API 조회를 확인했다.
+
+메인 데이터 연결은 실제 프로젝트의 초기 데이터 표시와 테스트 데이터를 이용한 브라우저 검증 40개를 통과했다. 정렬·테마·페이지 제목·이미지 경로·빈 목록·조회 실패와 재시도, 대량 목록의 페이지 단위 조회를 확인했다.
 
 퍼블리싱 원본과 상세 작업 계획은 작업 공간에서 프로젝트 루트의 형제 폴더인 `sketch/`와 `sketch/plan.md`에 둔다.
 
@@ -38,6 +42,7 @@ npm run dev
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | Project Settings → API Keys → Publishable key 복사 |
 | `VITE_ADMIN_EMAIL` | 관리자 Auth 계정 이메일. `dkal1572@naver.com`으로 설정 |
 | `VITE_ADMIN_USER_ID` | Authentication → Users에서 관리자 계정의 User UID 복사 |
+| `VITE_SUPABASE_STORAGE_BUCKET` | 이미지용 공개 버킷 이름. 기본값은 `site-images` |
 
 URL과 공개 키는 프로젝트의 Connect 창에서도 함께 확인할 수 있다. [Supabase 연결 안내](https://supabase.com/docs/guides/getting-started/api-keys)
 
@@ -46,6 +51,12 @@ URL과 공개 키는 프로젝트의 Connect 창에서도 함께 확인할 수 �
 브라우저용 키는 Publishable key 또는 기존 프로젝트의 `anon` 키를 사용한다. Secret key와 `service_role` 키는 서버 전용이다. `.env.local`은 Git에서 제외한다. [Supabase API 키 안내](https://supabase.com/docs/guides/getting-started/api-keys)
 
 환경변수를 저장한 뒤 개발 서버를 재시작한다. Vercel 배포 시에는 같은 환경변수를 프로젝트 설정에 입력하고 다시 배포한다.
+
+## 공개 이미지 조회
+
+프로필과 피드의 이미지 경로는 공개 버킷 `site-images` 안의 `profile/…`, `feed/…` 경로로 저장한다. 이 버킷을 실제 프로젝트에 생성했으며 `supabase/schema.sql`에도 생성 구문을 포함했다. 메인 화면은 DB 경로를 Storage 공개 URL로 변환해 표시한다.
+
+현재 DB에는 프로필·테마 초기값만 있고 섹션·키워드·피드 목록은 비어 있다. 이미지 파일과 목록을 등록하면 해당 콘텐츠가 메인에 표시된다.
 
 ## 빌드와 린트
 
