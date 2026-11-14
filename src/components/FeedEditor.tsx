@@ -2,6 +2,8 @@ import { useRef, useState } from 'react'
 import type { FeedDraft } from '../types/site'
 import SortableList from './SortableList'
 import type { SortLock } from '../utils/sortLock'
+import { validateImageFile } from '../services/storage'
+import { MAX_FEED_IMAGES, imageUploadHint, validateFeedImageCount } from '../utils/uploadLimits'
 
 interface FeedEditorProps {
     value: FeedDraft[]
@@ -10,16 +12,19 @@ interface FeedEditorProps {
     sorting: boolean
     onSortingChange?: (sorting: boolean) => void
     sortLock?: SortLock
+    maxCount?: number
 }
 
-export default function FeedEditor({ value, onChange, disabled, sorting, onSortingChange, sortLock }: FeedEditorProps) {
+export default function FeedEditor({ value, onChange, disabled, sorting, onSortingChange, sortLock, maxCount = MAX_FEED_IMAGES }: FeedEditorProps) {
     const fileInput = useRef<HTMLInputElement>(null)
     const [selectedNames, setSelectedNames] = useState('파일 제목')
+    const [imageError, setImageError] = useState<string | null>(null)
 
     return (
         <div className="card widthFull pdLg flexColumn gapSm">
             <p className="widthFull text2 mainColorText bold">피드</p>
             <p className="text3"> 드래그로 순서 변경</p>
+            <p className="text3">{imageUploadHint} · 최대 {maxCount}장</p>
             <div id="feedItems" className="widthFull flexColumn gapSm">
                 <SortableList
                     items={value}
@@ -65,14 +70,21 @@ export default function FeedEditor({ value, onChange, disabled, sorting, onSorti
                     multiple
                     onChange={(event) => {
                         const files = Array.from(event.currentTarget.files ?? [])
-                        if (files.length === 0) return
-
-                        onChange([...value, ...files.map((file) => ({ id: crypto.randomUUID(), name: file.name, file }))])
-                        setSelectedNames(files.map((file) => file.name).join(', '))
                         event.currentTarget.value = ''
+                        if (files.length === 0) return
+                        try {
+                            validateFeedImageCount(value.length + files.length, maxCount)
+                            for (const file of files) validateImageFile(file, 'feed')
+                            onChange([...value, ...files.map((file) => ({ id: crypto.randomUUID(), name: file.name, file }))])
+                            setSelectedNames(files.map((file) => file.name).join(', '))
+                            setImageError(null)
+                        } catch (error) {
+                            setImageError(error instanceof Error ? error.message : '이미지 파일을 확인해 주세요.')
+                        }
                     }}
                 />
             </div>
+            {imageError && <p className="text3" role="alert">{imageError}</p>}
         </div>
     )
 }

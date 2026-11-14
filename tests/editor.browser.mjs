@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -35,12 +36,17 @@ let mode = { userStatus: 200, userDelay: 0, tokenDelay: 0, saveDelay: 0 }
 const requests = []
 let nextId = 100
 const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64')
+const imageHash = bytes => createHash('sha256').update(bytes).digest('hex')
 const api = http.createServer(async (req,res) => {
     const url = new URL(req.url, 'http://localhost')
     const chunks=[]; for await(const chunk of req)chunks.push(chunk)
-    const raw=Buffer.concat(chunks).toString()
+    const bytes=Buffer.concat(chunks),raw=bytes.toString()
     const entry={method:req.method,path:url.pathname,body:null}; requests.push(entry)
     if(raw && !req.headers['content-type']?.includes('multipart')){try{entry.body=JSON.parse(raw)}catch{}}
+    if(req.method==='POST' && url.pathname.startsWith('/storage/') && req.headers['content-type']?.includes('multipart')){
+        const form=await new Response(bytes,{headers:{'Content-Type':req.headers['content-type']}}).formData()
+        for(const value of form.values())if(value instanceof File)entry.upload={name:value.name,size:value.size,hash:imageHash(Buffer.from(await value.arrayBuffer()))}
+    }
     res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Expose-Headers','Content-Range');res.setHeader('Access-Control-Allow-Headers','*');res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,DELETE,OPTIONS')
     if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}
     const send=(status,data)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(data===undefined?undefined:JSON.stringify(data))}
@@ -77,6 +83,9 @@ try {
     const chromePath = await findChrome()
     temp=await fs.mkdtemp(path.join(os.tmpdir(),'profile-editor-check-'))
     const picture=path.join(temp,'선택 이미지.png');await fs.writeFile(picture,image)
+    const maxImageBytes=10*1024*1024,boundaryImage=Buffer.alloc(maxImageBytes);image.copy(boundaryImage)
+    const boundaryPicture=path.join(temp,'경계 이미지.png'),invalidPicture=path.join(temp,'지원하지 않는 이미지.gif')
+    await fs.writeFile(boundaryPicture,boundaryImage);await fs.writeFile(invalidPicture,image)
     const apiPort=await listen(api),vitePort=await freePort(),debugPort=await freePort()
     const appUrl=`http://127.0.0.1:${vitePort}`
     vite=spawn(process.execPath,[path.join(project,'node_modules/vite/bin/vite.js'),'--host','127.0.0.1','--port',String(vitePort),'--strictPort'],{cwd:project,env:{...process.env,VITE_SUPABASE_URL:`http://127.0.0.1:${apiPort}`,VITE_SUPABASE_PUBLISHABLE_KEY:'test-publishable-key',VITE_ADMIN_EMAIL:user.email,VITE_ADMIN_USER_ID:user.id,VITE_SUPABASE_STORAGE_BUCKET:'site-images'},windowsHide:true,stdio:['ignore','pipe','pipe']})
@@ -123,11 +132,12 @@ try {
     await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:1100,deviceScaleFactor:1,mobile:false})
     await cdp('Page.addScriptToEvaluateOnNewDocument',{source:`if(sessionStorage.getItem('editor-test-no-session')==='1')localStorage.removeItem('sb-127-auth-token');else localStorage.setItem('sb-127-auth-token',${JSON.stringify(JSON.stringify(sessionValue))});`})
     const navigate=async destination=>{await cdp('Page.navigate',{url:appUrl+destination});await pause(400)}
-    const reset=async(authenticated=true)=>{mode={userStatus:200,userDelay:0,tokenDelay:0,saveDelay:0};site=initial();acceptDialog=true;await js(`try{sessionStorage.setItem('editor-test-no-session',${JSON.stringify(authenticated?'0':'1')})}catch{}`);await navigate('/');acceptDialog=false;await until('!!document.querySelector(".edit")','main ready');if(authenticated){await until("document.querySelector('.edit')?.getAttribute('aria-label')==='수정 화면 열기'",'verified main');await nativeClick('.edit');await until('!!document.querySelector("#profileName")','editor ready')}dialogs.length=0;requests.length=0}
+    const reset=async(authenticated=true,feedCount=null)=>{mode={userStatus:200,userDelay:0,tokenDelay:0,saveDelay:0};site=initial();if(feedCount!==null)site.feed=Array.from({length:feedCount},(_,i)=>({id:2000+i,sort_order:i+1,image_path:`feed/saved-${i+1}.png`}));acceptDialog=true;await js(`try{sessionStorage.setItem('editor-test-no-session',${JSON.stringify(authenticated?'0':'1')})}catch{}`);await navigate('/');acceptDialog=false;await until('!!document.querySelector(".edit")','main ready');if(authenticated){await until("document.querySelector('.edit')?.getAttribute('aria-label')==='수정 화면 열기'",'verified main');await nativeClick('.edit');await until('!!document.querySelector("#profileName")','editor ready')}dialogs.length=0;requests.length=0}
     const refresh=()=>js(`void import('/src/lib/supabase.ts').then(({supabase})=>supabase.auth.refreshSession())`)
     const externalSignout=()=>js(`void import('/src/lib/supabase.ts').then(({supabase})=>supabase.auth.signOut({scope:'local'}))`)
     const save=async()=>{await js('document.querySelector("button[type=submit]").click()');await until('/저장했습니다|저장 성공/.test(document.body.innerText) && !document.querySelector("button[type=submit]").matches(":disabled")','save complete')}
-    const selectFile=async selector=>{const {root}=await cdp('DOM.getDocument');const {nodeId}=await cdp('DOM.querySelector',{nodeId:root.nodeId,selector});await cdp('DOM.setFileInputFiles',{nodeId,files:[picture]});await pause(100)}
+    const selectFile=async(selector,files=[picture])=>{const {root}=await cdp('DOM.getDocument');const {nodeId}=await cdp('DOM.querySelector',{nodeId:root.nodeId,selector});await cdp('DOM.setFileInputFiles',{nodeId,files});await pause(100)}
+    const selectVirtualFile=async(selector,file)=>{await js(`(()=>{const input=document.querySelector(${JSON.stringify(selector)}),file=${JSON.stringify(file)},transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(file.size)],file.name,{type:file.type}));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}))})()`);await pause(100)}
     await navigate('/');await reset()
     check(await hasEditor(),'검증된 관리자만 수정 화면 열기')
     check(await js(`(()=>{const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return !e.defaultPrevented})()`),'변경 전에는 이탈 경고 없음')
@@ -208,6 +218,39 @@ try {
         check(requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').length===savedRequests,'파일 정리 재시도는 DB를 다시 저장하지 않음')
         await focus(sectionSelector);await key('Space',' ');await externalSignout();await until(`![...document.querySelectorAll('.dragHandle')].some(b=>!b.matches(':disabled')) && !document.querySelector('.sortableDragging')`,'auth locks drag')
         check(await js(`[...document.querySelectorAll('.dragHandle')].every(b=>b.matches(':disabled'))`),'인증 잠금 중 활성 드래그 종료·다른 목록 시작 차단')
+
+        await reset();await set('#profileName','업로드 검증 초안');await selectFile('#profileFile',[boundaryPicture])
+        const boundaryPreview=await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src`)
+        check(boundaryPreview.startsWith('blob:') && await js(`document.querySelector('#profileFile').value==='' && document.querySelector('#profileFile').files.length===0 && document.querySelector('#profileFile').closest('.card').querySelector('.picTitle').textContent==='경계 이미지.png'`),'정확히 10MiB인 프로필 이미지 허용·파일 입력 초기화')
+        await selectVirtualFile('#profileFile',{name:'크기 초과.png',type:'image/png',size:maxImageBytes+1})
+        check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('10MB를 초과') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)} && document.querySelector('#profileFile').value==='' && document.querySelector('#profileFile').files.length===0`),'10MiB 초과 프로필 즉시 거절·기존 선택 유지·입력 초기화')
+        await selectVirtualFile('#profileFile',{name:'빈 이미지.png',type:'image/png',size:0})
+        check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('비어 있습니다') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)}`),'빈 프로필 이미지 거절 후 기존 미리보기 유지')
+        await selectVirtualFile('#profileFile',{name:'유형 오류.png',type:'text/html',size:image.length})
+        check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('지원하지 않는 형식') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)} && document.querySelector('#profileName').value==='업로드 검증 초안' && document.querySelector('#profileFile').closest('.card').querySelector('.picTitle').textContent==='경계 이미지.png' && document.querySelector('#profileFile').files.length===0`) && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='POST')||r.path==='/rest/v1/rpc/save_site'),'MIME 오류 프로필 거절 후 초안·파일 제목 유지 및 저장 요청 없음')
+        await save();const boundaryUpload=requests.find(r=>r.path.startsWith('/storage/')&&r.method==='POST')?.upload
+        check(boundaryUpload?.name==='경계 이미지.png' && boundaryUpload.size===maxImageBytes && boundaryUpload.hash===imageHash(boundaryImage) && site.profile.name==='업로드 검증 초안','검증 오류 뒤 저장은 기존 선택 이미지 원본 바이트 유지')
+
+        await reset();await selectFile('#feedFiles')
+        const selectedFeed=await js(`document.querySelector('#feedItems').textContent`)
+        await selectFile('#feedFiles',[picture,invalidPicture])
+        check(await js(`document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')?.textContent.includes('지원하지 않는 형식') && document.querySelector('#feedItems').textContent===${JSON.stringify(selectedFeed)} && document.querySelector('#feedFiles').closest('.card').querySelector('.picTitle').textContent==='선택 이미지.png' && document.querySelector('#feedFiles').value==='' && document.querySelector('#feedFiles').files.length===0`),'피드 혼합 배치 전체 거절·기존 선택과 제목 유지·입력 초기화')
+        check(!requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='POST')||r.path==='/rest/v1/rpc/save_site'),'피드 파일 선택 검증 실패는 업로드·DB 요청 없음')
+        await save();const feedUploads=requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST')
+        check(site.feed.length===3 && feedUploads.length===1 && feedUploads[0].upload?.name==='선택 이미지.png' && feedUploads[0].upload?.hash===imageHash(image),'거절한 배치를 제외하고 기존 선택 피드 원본만 저장')
+
+        await reset(true,49);await selectFile('#feedFiles')
+        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===50 && !document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')`),'저장된 49장에 한 장을 추가해 최대 50장 허용')
+        await selectFile('#feedFiles')
+        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===50 && document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')?.textContent.includes('최대 50장') && document.querySelector('#feedFiles').files.length===0`) && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='POST')||r.path==='/rest/v1/rpc/save_site'),'51번째 피드 즉시 거절·기존 50장과 입력 초기화 유지')
+        await save();check(site.feed.length===50 && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length===1,'허용된 50장 피드 순서·내용 저장')
+
+        await reset(true,51);await set('#profileName','기존 51장 보존');await selectFile('#feedFiles')
+        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===51 && document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')?.textContent.includes('최대 51장') && document.querySelector('#feedFiles').files.length===0`),'기존 51장 피드는 보존하고 추가 증가는 거절')
+        await save();check(site.profile.name==='기존 51장 보존' && site.feed.length===51 && !requests.some(r=>r.path.startsWith('/storage/')&&r.method==='POST'),'기존 51장 피드가 있어도 다른 내용 수정 저장 가능')
+        await nativeClick('#feedItems .picEditItem .btn');await selectFile('#feedFiles')
+        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===51 && !document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')`),'기존 제한 초과 피드는 삭제한 한 장의 교체 허용')
+        await save();check(site.feed.length===51 && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length===1,'기존 제한 초과 피드 교체도 원래 개수로 저장')
     }
     check(errors.length===0,'브라우저 실행 예외 없음')
     console.log(JSON.stringify({phase,passed:passed.length,checks:passed,errors},null,2))

@@ -11,6 +11,7 @@ import type { SiteData, SiteEditDraft } from '../types/site'
 import { applyTheme } from '../utils/theme'
 import { isHexColor, validateRequired } from '../utils/validation'
 import { isEditorDirty } from '../utils/editorDirty'
+import { feedImageLimit } from '../utils/uploadLimits'
 import type { LeaveGuard } from '../hooks/useGuardedNavigation'
 import { useSortLock } from '../hooks/useSortLock'
 
@@ -285,7 +286,7 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
                                 }}
                             />
                         </div>
-                        <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} sortLock={sortLock} />
+                        <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} sortLock={sortLock} maxCount={feedImageLimit(baseline?.feed.length ?? 0)} />
                         <button className="btn h30 border borderRad widthFull" type="submit" disabled={sorting}>{saving ? '저장 중…' : '저장'}</button>
                     </fieldset>
                     {saved && <p role="status">저장 성공</p>}

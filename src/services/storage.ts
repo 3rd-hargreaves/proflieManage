@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase'
+import { validateImageUpload } from '../utils/uploadLimits'
 
 const imageBucket = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET?.trim() || 'site-images'
 
@@ -46,9 +47,7 @@ export function imageFileName(path: string): string {
 }
 
 export function validateImageFile(file: File, folder: ImageFolder): void {
-    if (!/\.(?:jpe?g|png)$/i.test(file.name) || (file.type && !/^image\/(?:jpeg|png)$/i.test(file.type))) {
-        throw new Error(`이미지 “${file.name}”는 지원하지 않는 형식입니다. JPG, JPEG, PNG 파일을 선택해 주세요.`)
-    }
+    validateImageUpload(file)
     // Keys contain ASCII only, so string length equals the UTF-8 byte length.
     if (`${folder}/${'0'.repeat(36)}--${encodedFileName(file.name)}`.length > 1024) {
         throw new Error('이미지 파일 이름이 너무 깁니다. 파일 이름을 줄인 뒤 다시 선택해 주세요.')

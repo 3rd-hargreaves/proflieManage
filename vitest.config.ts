@@ -4,7 +4,7 @@ export default defineConfig({
     envDir: false,
     test: {
         environment: 'node',
-        include: ['tests/save.test.ts'],
+        include: ['tests/save.test.ts', 'tests/uploadLimits.test.ts'],
         restoreMocks: true,
         unstubEnvs: true,
     },

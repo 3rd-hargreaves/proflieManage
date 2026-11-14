@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase'
 import type { SiteData, SiteEditDraft } from '../types/site'
 import { isHexColor } from '../utils/validation'
+import { feedImageLimit, validateFeedImageCount } from '../utils/uploadLimits'
 import { queueImageCleanup, retryImageCleanup, uploadImage, validateImageFile } from './storage'
 
 export { getPendingImageCleanupCount, imageFileName, retryImageCleanup } from './storage'
@@ -12,6 +13,9 @@ interface SaveResult {
 
 function errorMessage(error: unknown): string {
     if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+        if (error.message.includes('site_feed_limit_exceeded')) {
+            return '피드 이미지 등록 한도를 초과했습니다. 최신 목록을 확인하고 사진 수를 줄여 다시 저장해 주세요.'
+        }
         if (error.message.includes('site_conflict')) {
             return '다른 창에서 사이트 내용이 변경되었습니다. 입력한 내용은 유지됩니다. 최신 내용을 다시 불러온 뒤 수정해 주세요.'
         }
@@ -68,6 +72,7 @@ export async function saveSite(draft: SiteEditDraft, expected: SiteData): Promis
     }
     if (!keywords.length) throw new Error('키워드를 하나 이상 입력해 주세요.')
     if (draft.feed.some((image) => !image.file && !image.path)) throw new Error('피드 이미지를 선택해 주세요.')
+    validateFeedImageCount(draft.feed.length, feedImageLimit(expected.feed.length))
     if (draft.profile.file) validateImageFile(draft.profile.file, 'profile')
     for (const image of draft.feed) if (image.file) validateImageFile(image.file, 'feed')
 

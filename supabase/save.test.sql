@@ -19,6 +19,12 @@ begin
             'site_images_admin_update', 'site_images_admin_delete')
           and roles = array['authenticated']::name[]) <> 4
     then raise exception 'Missing authenticated Storage policies'; end if;
+    if not exists (
+        select 1 from storage.buckets
+        where id = 'site-images' and public and file_size_limit = 10485760
+            and allowed_mime_types @> array['image/jpeg', 'image/png']
+            and allowed_mime_types <@ array['image/jpeg', 'image/png']
+    ) then raise exception 'Incorrect Storage upload constraints'; end if;
 end;
 $$;
 set local role anon;
@@ -54,6 +60,13 @@ declare
     v_duplicate_payload jsonb;
     v_duplicates jsonb;
     v_duplicate_swapped jsonb;
+    v_limit_payload jsonb;
+    v_limit_rows jsonb;
+    v_fifty jsonb;
+    v_legacy jsonb;
+    v_legacy_reordered jsonb;
+    v_legacy_replaced jsonb;
+    v_reduced jsonb;
     v_bad jsonb;
     v_bad_cases jsonb;
     v_list text;
@@ -241,6 +254,105 @@ begin
     then raise exception 'Identical-content test did not restore empty snapshot'; end if;
     set constraints all immediate;
 
+    -- The configured feed limit allows 50 rows and refuses growth past 50.
+    select jsonb_agg(jsonb_build_object('id', null,
+        'image_path', 'feed/limit-' || position || '.png') order by position)
+    into v_limit_rows from generate_series(1, 50) as entries(position);
+    v_limit_payload := jsonb_set(v_payload, '{feed}', v_limit_rows);
+    v_fifty := public.save_site(v_empty, v_limit_payload);
+    if jsonb_array_length(v_fifty -> 'feed') <> 50 or exists (
+        select 1 from jsonb_array_elements(v_fifty -> 'feed') with ordinality as entries(value, position)
+        where (value ->> 'sort_order')::integer <> position
+            or value ->> 'image_path' <> ('feed/limit-' || position || '.png')
+    ) then raise exception 'Saving exactly 50 feed images failed'; end if;
+    if public.save_site(v_empty, v_limit_payload) is distinct from v_fifty
+    then raise exception '50-image request replay changed assigned IDs'; end if;
+    set constraints all immediate;
+
+    v_bad := jsonb_set(v_limit_payload, '{feed}', (v_limit_payload -> 'feed')
+        || jsonb_build_array(jsonb_build_object('id', null, 'image_path', 'feed/over-limit.png')));
+    v_bad := jsonb_set(v_bad, '{profile,name}', '"must not save over limit"'::jsonb);
+    begin
+        perform public.save_site(v_fifty, v_bad);
+        raise exception '51-image feed was accepted at the 50-image limit';
+    exception when invalid_parameter_value then
+        if sqlerrm <> 'site_feed_limit_exceeded' then raise; end if;
+    end;
+    if private.site_snapshot() is distinct from v_fifty
+    then raise exception 'Feed limit rejection did not preserve the whole site'; end if;
+
+    -- Simulate pre-existing legacy data using authorized direct table writes.
+    -- No Storage objects are created, and every row is rolled back below.
+    insert into public.feed_images (image_path, sort_order)
+    values ('feed/legacy-extra.png', 51);
+    v_legacy := private.site_snapshot();
+    select jsonb_agg(value - 'sort_order' order by position desc)
+    into v_limit_rows
+    from jsonb_array_elements(v_legacy -> 'feed') with ordinality as entries(value, position);
+    v_limit_payload := jsonb_set(v_payload, '{feed}', v_limit_rows);
+    v_legacy_reordered := public.save_site(v_legacy, v_limit_payload);
+    if jsonb_array_length(v_legacy_reordered -> 'feed') <> 51
+        or v_legacy_reordered #> '{feed,0,id}' is distinct from v_legacy #> '{feed,50,id}'
+        or v_legacy_reordered #> '{feed,50,id}' is distinct from v_legacy #> '{feed,0,id}'
+        or exists (
+            select 1 from jsonb_array_elements(v_legacy_reordered -> 'feed') with ordinality as entries(value, position)
+            where (value ->> 'sort_order')::integer <> position
+        )
+    then raise exception 'Legacy 51-image reorder failed'; end if;
+    if public.save_site(v_legacy, v_limit_payload) is distinct from v_legacy_reordered
+    then raise exception 'Legacy reorder replay changed the saved result'; end if;
+    set constraints all immediate;
+
+    -- Replacing a legacy row with a new upload preserves the allowed row count.
+    v_limit_payload := jsonb_set(v_limit_payload, '{feed,0,id}', 'null'::jsonb);
+    v_limit_payload := jsonb_set(v_limit_payload, '{feed,0,image_path}', '"feed/replaced-legacy.png"'::jsonb);
+    v_legacy_replaced := public.save_site(v_legacy_reordered, v_limit_payload);
+    if jsonb_array_length(v_legacy_replaced -> 'feed') <> 51
+        or v_legacy_replaced #> '{feed,0,id}' = v_legacy_reordered #> '{feed,0,id}'
+        or v_legacy_replaced #>> '{feed,0,image_path}' <> 'feed/replaced-legacy.png'
+        or v_legacy_replaced #> '{feed,1,id}' is distinct from v_legacy_reordered #> '{feed,1,id}'
+    then raise exception 'Same-count legacy feed replacement failed'; end if;
+    if public.save_site(v_legacy_reordered, v_limit_payload) is distinct from v_legacy_replaced
+    then raise exception 'Legacy replacement replay changed assigned IDs'; end if;
+    set constraints all immediate;
+
+    v_bad := jsonb_set(v_limit_payload, '{feed}', (v_limit_payload -> 'feed')
+        || jsonb_build_array(jsonb_build_object('id', null, 'image_path', 'feed/legacy-growth.png')));
+    begin
+        perform public.save_site(v_legacy_replaced, v_bad);
+        raise exception 'Legacy feed was allowed to grow from 51 to 52';
+    exception when invalid_parameter_value then
+        if sqlerrm <> 'site_feed_limit_exceeded' then raise; end if;
+    end;
+    if private.site_snapshot() is distinct from v_legacy_replaced
+    then raise exception 'Legacy growth rejection changed the site'; end if;
+
+    select jsonb_agg(value - 'sort_order' order by position)
+    into v_limit_rows
+    from jsonb_array_elements(v_legacy_replaced -> 'feed') with ordinality as entries(value, position);
+    v_limit_payload := jsonb_set(v_payload, '{feed}', v_limit_rows - 50);
+    v_reduced := public.save_site(v_legacy_replaced, v_limit_payload);
+    if jsonb_array_length(v_reduced -> 'feed') <> 50
+        or v_reduced #> '{feed,0,id}' is distinct from v_legacy_replaced #> '{feed,0,id}'
+    then raise exception 'Reducing a legacy feed to 50 images failed'; end if;
+    set constraints all immediate;
+
+    v_bad := jsonb_set(v_limit_payload, '{feed}', (v_limit_payload -> 'feed')
+        || jsonb_build_array(jsonb_build_object('id', null, 'image_path', 'feed/regrowth.png')));
+    begin
+        perform public.save_site(v_reduced, v_bad);
+        raise exception 'A reduced legacy feed was allowed to grow back past 50';
+    exception when invalid_parameter_value then
+        if sqlerrm <> 'site_feed_limit_exceeded' then raise; end if;
+    end;
+    if private.site_snapshot() is distinct from v_reduced
+    then raise exception 'Reduced feed growth rejection changed the site'; end if;
+
+    v_result := public.save_site(v_reduced, v_payload);
+    if v_result is distinct from v_empty
+    then raise exception 'Feed limit tests did not restore the empty snapshot'; end if;
+    set constraints all immediate;
+
     perform set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-000000000001', true);
     perform set_config('request.jwt.claims', '{"sub":"00000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
     if private.is_site_admin() then raise exception 'Nonadmin recognized as admin'; end if;
@@ -262,5 +374,5 @@ begin
 end;
 $$;
 reset role;
-select 'PASS: admin save, IDs, reorder/new/delete, identical-content ID reorder, replay, stale conflict, malformed/no-op, atomic rollback, empty lists, anon/nonadmin denied, Storage policies' as sql_check;
+select 'PASS: admin save, IDs, reorder/new/delete, identical-content ID reorder, replay, stale conflict, malformed/no-op, atomic rollback, empty lists, feed limit and legacy preservation, anon/nonadmin denied, Storage policies' as sql_check;
 rollback;

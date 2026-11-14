@@ -47,6 +47,22 @@ function png(name = '새 이미지.png'): File {
     return new File([bytes], name, { type: 'image/png' })
 }
 
+function feedFixture(count: number): ReturnType<typeof fixture> {
+    const state = fixture()
+    state.expected.feed = Array.from({ length: count }, (_, index) => ({
+        id: 20 + index,
+        sort_order: index + 1,
+        image_path: `feed/existing-${index + 1}.png`,
+    }))
+    state.draft.feed = state.expected.feed.map(row => ({
+        id: `feed-${row.id}`,
+        databaseId: row.id,
+        name: row.image_path.split('/').at(-1)!,
+        path: row.image_path,
+    }))
+    return state
+}
+
 // The server result is a test fixture. SQL atomicity/idempotency is covered by
 // supabase/save.test.sql; these tests verify the client sends/reuses the request.
 function serverResult(payload: SavePayload): SiteData {
@@ -261,6 +277,119 @@ describe('site save transaction boundary', () => {
         expect(api.upload).not.toHaveBeenCalled()
         expect(api.rpc).not.toHaveBeenCalled()
         expect(api.remove).not.toHaveBeenCalled()
+    })
+})
+
+describe('image upload limits at the save boundary', () => {
+    it('rejects 51 feed images before any storage request or RPC', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft } = feedFixture(51)
+        const { expected } = fixture()
+        draft.profile.file = png()
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('최대 50장')
+
+        expect(api.from).not.toHaveBeenCalled()
+        expect(api.upload).not.toHaveBeenCalled()
+        expect(api.rpc).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        { reason: 'oversized', makeFile: () => new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' }), message: '10MB를 초과' },
+        { reason: 'empty', makeFile: () => new File([], 'empty.png', { type: 'image/png' }), message: '비어 있습니다' },
+        { reason: 'unsupported MIME', makeFile: () => new File(['document'], 'disguised.png', { type: 'application/pdf' }), message: '지원하지 않는 형식' },
+    ])('checks a later $reason feed File before uploading any earlier valid File', async ({ makeFile, message }) => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        const profileFile = png('valid-profile.png')
+        const firstFeedFile = png('valid-feed.png')
+        const rejectedFile = makeFile()
+        draft.profile.file = profileFile
+        draft.feed.push(
+            { id: 'valid-new', name: firstFeedFile.name, file: firstFeedFile },
+            { id: 'invalid-new', name: rejectedFile.name, file: rejectedFile },
+        )
+
+        await expect(saveSite(draft, expected)).rejects.toThrow(message)
+
+        expect(api.from).not.toHaveBeenCalled()
+        expect(api.upload).not.toHaveBeenCalled()
+        expect(api.rpc).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+        expect(draft.profile.file).toBe(profileFile)
+        expect(draft.feed.at(-1)?.file).toBe(rejectedFile)
+    })
+
+    it.each(['reorder', 'replace', 'reduce'])('allows an existing 51-image feed to %s without growing', async action => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = feedFixture(51)
+        if (action === 'reorder') draft.feed.reverse()
+        if (action === 'replace') draft.feed[0] = { ...draft.feed[0], name: 'replacement.png', file: png('replacement.png') }
+        if (action === 'reduce') draft.feed.pop()
+
+        const result = await saveSite(draft, expected)
+
+        expect(api.rpc).toHaveBeenCalledTimes(1)
+        expect(result.site.feed).toHaveLength(action === 'reduce' ? 50 : 51)
+        expect(api.upload).toHaveBeenCalledTimes(action === 'replace' ? 1 : 0)
+        if (action === 'reorder') {
+            expect(result.site.feed.map(row => row.id)).toEqual(expected.feed.map(row => row.id).reverse())
+            expect(api.remove).not.toHaveBeenCalled()
+        } else {
+            const removedPath = action === 'replace' ? expected.feed[0].image_path : expected.feed[50].image_path
+            expect(api.remove).toHaveBeenCalledWith([removedPath])
+            if (action === 'replace') {
+                expect(result.site.feed[0]).toMatchObject({ id: expected.feed[0].id, image_path: api.upload.mock.calls[0][0] })
+            }
+        }
+    })
+
+    it('rejects growth from an existing 51-image feed to 52 before any network request', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = feedFixture(51)
+        draft.profile.file = png()
+        draft.feed.push({ id: 'extra', name: 'extra.png', file: png('extra.png') })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('최대 51장')
+
+        expect(api.from).not.toHaveBeenCalled()
+        expect(api.upload).not.toHaveBeenCalled()
+        expect(api.rpc).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+    })
+
+    it('passes original profile and feed Files to the SDK and fills a missing MIME type', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        const profileFile = png('original-profile.png')
+        const feedFile = new File([png()], 'original-feed.PNG', { lastModified: 123456789 })
+        draft.profile.file = profileFile
+        draft.feed.push({ id: 'new', name: feedFile.name, file: feedFile })
+
+        await saveSite(draft, expected)
+
+        expect(api.upload).toHaveBeenCalledTimes(2)
+        expect(api.upload.mock.calls[0][1]).toBe(profileFile)
+        expect(api.upload.mock.calls[1][1]).toBe(feedFile)
+        expect(api.upload.mock.calls[0][2]).toMatchObject({ contentType: 'image/png', upsert: false })
+        expect(api.upload.mock.calls[1][2]).toMatchObject({ contentType: 'image/png', upsert: false })
+        expect(feedFile.type).toBe('')
+        expect(feedFile.lastModified).toBe(123456789)
+    })
+
+    it('explains the server feed limit in Korean without deleting existing images', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png()
+        api.rpc.mockResolvedValueOnce({ data: null, error: { code: '22023', message: 'site_feed_limit_exceeded' } })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('피드 이미지 등록 한도를 초과했습니다. 최신 목록을 확인하고 사진 수를 줄여 다시 저장해 주세요.')
+
+        expect(api.rpc).toHaveBeenCalledTimes(1)
+        expect(api.upload).toHaveBeenCalledTimes(1)
+        expect(api.remove).not.toHaveBeenCalled()
+        expect(draft.profile.imagePath).toBe(expected.profile.profile_image_path)
     })
 })
 

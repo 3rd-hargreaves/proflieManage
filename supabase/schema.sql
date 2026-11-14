@@ -200,8 +200,11 @@ end;
 $$;
 
 -- 공개 화면의 프로필·피드 이미지는 같은 버킷의 경로로 구분한다.
-insert into storage.buckets (id, name, public)
-values ('site-images', 'site-images', true)
-on conflict (id) do nothing;
+-- 새 파일만 10MiB / JPEG·PNG로 제한한다. 기존 파일은 그대로 둔다.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('site-images', 'site-images', true, 10485760, array['image/jpeg', 'image/png'])
+on conflict (id) do update set
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
 
 commit;

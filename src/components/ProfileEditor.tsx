@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ProfileDraft } from '../types/site'
 import { imageFileName } from '../services/save'
-import { getImageUrl } from '../services/storage'
+import { getImageUrl, validateImageFile } from '../services/storage'
+import { imageUploadHint } from '../utils/uploadLimits'
 import SiteImage from './SiteImage'
 
 interface ProfileEditorProps {
@@ -12,6 +13,7 @@ interface ProfileEditorProps {
 export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
     const fileInput = useRef<HTMLInputElement>(null)
     const [preview, setPreview] = useState<{ file: File, url: string } | null>(null)
+    const [imageError, setImageError] = useState<string | null>(null)
     const fileName = value.file?.name ?? (value.imagePath ? imageFileName(value.imagePath) : '파일 제목')
 
     useEffect(() => {
@@ -21,6 +23,7 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
     return (
         <div className="card pdLg flexColumn alignCenter gapMd">
             <p className="widthFull text2 mainColorText bold">정보</p>
+            <p className="widthFull text3">{imageUploadHint}</p>
             <SiteImage
                 className="profileImg"
                 src={value.file ? (preview?.file === value.file ? preview.url : undefined) : getImageUrl(value.imagePath)}
@@ -40,14 +43,20 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
                     accept=".jpg, .jpeg, .png"
                     onChange={(event) => {
                         const file = event.currentTarget.files?.[0]
-                        if (file) {
+                        event.currentTarget.value = ''
+                        if (!file) return
+                        try {
+                            validateImageFile(file, 'profile')
                             setPreview({ file, url: URL.createObjectURL(file) })
                             onChange({ ...value, file })
+                            setImageError(null)
+                        } catch (error) {
+                            setImageError(error instanceof Error ? error.message : '이미지 파일을 확인해 주세요.')
                         }
-                        event.currentTarget.value = ''
                     }}
                 />
             </div>
+            {imageError && <p className="widthFull text3" role="alert">{imageError}</p>}
             <input
                 id="profileName"
                 className="widthFull h30 pdSide border borderRad"
