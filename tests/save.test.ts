@@ -6,11 +6,14 @@ const api = vi.hoisted(() => ({
     upload: vi.fn(),
     remove: vi.fn(),
     from: vi.fn(),
+    readSite: vi.fn(),
 }))
 
 vi.mock('../src/lib/supabase', () => ({
     supabase: { rpc: api.rpc, storage: { from: api.from } },
 }))
+
+vi.mock('../src/services/site', () => ({ loadSite: api.readSite }))
 
 type SavePayload = {
     p_expected: SiteData
@@ -47,6 +50,23 @@ function png(name = '새 이미지.png'): File {
     return new File([bytes], name, { type: 'image/png' })
 }
 
+function memoryStorage() {
+    const values = new Map<string, string>()
+    return {
+        values,
+        get length() { return values.size },
+        key: (index: number) => Array.from(values.keys())[index] ?? null,
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: vi.fn((key: string, value: string) => { values.set(key, value) }),
+        removeItem: vi.fn((key: string) => { values.delete(key) }),
+    }
+}
+
+function unreferencedSite(): SiteData {
+    const { expected } = fixture()
+    return { ...expected, profile: { ...expected.profile, profile_image_path: null }, feed: [] }
+}
+
 function feedFixture(count: number): ReturnType<typeof fixture> {
     const state = fixture()
     state.expected.feed = Array.from({ length: count }, (_, index) => ({
@@ -81,12 +101,18 @@ beforeEach(() => {
     vi.resetModules()
     for (const mock of Object.values(api)) mock.mockReset()
     vi.stubEnv('VITE_SUPABASE_STORAGE_BUCKET', 'site-images')
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://cleanup-test.example')
+    vi.stubGlobal('window', { localStorage: memoryStorage() })
     api.from.mockReturnValue({ upload: api.upload, remove: api.remove })
     api.upload.mockResolvedValue({ data: {}, error: null })
     api.remove.mockResolvedValue({ data: [], error: null })
     api.rpc.mockImplementation(async (_name: string, payload: SavePayload) => ({ data: serverResult(payload), error: null }))
+    api.readSite.mockResolvedValue(unreferencedSite())
 })
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+})
 
 describe('site save transaction boundary', () => {
     it('uploads new images before RPC and deletes only replaced paths after success', async () => {
@@ -415,8 +441,160 @@ describe('storage cleanup lifecycle', () => {
 
         const first = retryImageCleanup()
         const second = retryImageCleanup()
+        expect(api.readSite).toHaveBeenCalledTimes(1)
+        await vi.waitFor(() => expect(api.remove).toHaveBeenCalledTimes(1))
         expect(api.remove).toHaveBeenCalledTimes(1)
         finish({ error: null })
         expect(await Promise.all([first, second])).toEqual([true, true])
+    })
+})
+
+describe('recovered cleanup reference protection', () => {
+    it('recovers confirmed candidates after a module reload and waits for explicit cleanup', async () => {
+        const original = await import('../src/services/storage')
+        original.queueImageCleanup(['profile/replaced.png', 'feed/never-committed.png'])
+        expect(original.getPendingImageCleanupCount()).toBe(2)
+
+        vi.resetModules()
+        const reopened = await import('../src/services/storage')
+
+        expect(reopened.getPendingImageCleanupCount()).toBe(2)
+        expect(api.readSite).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+        expect(await reopened.retryImageCleanup()).toBe(true)
+        expect(api.readSite).toHaveBeenCalledTimes(1)
+        expect(api.remove).toHaveBeenCalledWith(['profile/replaced.png', 'feed/never-committed.png'])
+        expect(reopened.getPendingImageCleanupCount()).toBe(0)
+        expect(window.localStorage.length).toBe(0)
+    })
+
+    it('cancels current profile/feed references and deletes only unreferenced candidates', async () => {
+        const storage = await import('../src/services/storage')
+        const { expected } = fixture()
+        api.readSite.mockResolvedValueOnce(expected)
+        storage.queueImageCleanup(['profile/old.png', 'feed/first.png', 'feed/unreferenced.png'])
+
+        expect(await storage.retryImageCleanup()).toBe(true)
+
+        expect(api.readSite).toHaveBeenCalledTimes(1)
+        expect(api.readSite.mock.calls[0][0]).toBeInstanceOf(AbortSignal)
+        expect(api.remove).toHaveBeenCalledTimes(1)
+        expect(api.remove).toHaveBeenCalledWith(['feed/unreferenced.png'])
+        expect(api.rpc).not.toHaveBeenCalled()
+        expect(api.upload).not.toHaveBeenCalled()
+        expect(storage.getPendingImageCleanupCount()).toBe(0)
+        vi.resetModules()
+        expect((await import('../src/services/storage')).getPendingImageCleanupCount()).toBe(0)
+    })
+
+    it('makes no storage request when every recovered candidate is currently referenced', async () => {
+        const storage = await import('../src/services/storage')
+        const { expected } = fixture()
+        api.readSite.mockResolvedValueOnce(expected)
+        storage.queueImageCleanup(['profile/old.png', 'feed/first.png', 'feed/second.png'])
+
+        expect(await storage.retryImageCleanup()).toBe(true)
+
+        expect(api.readSite).toHaveBeenCalledTimes(1)
+        expect(api.from).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+        expect(storage.getPendingImageCleanupCount()).toBe(0)
+    })
+
+    it('keeps the queue without deleting when the reference lookup fails and retries after recovery', async () => {
+        const storage = await import('../src/services/storage')
+        storage.queueImageCleanup(['feed/awaiting-check.png'])
+        api.readSite.mockRejectedValueOnce(new Error('Database unavailable'))
+
+        expect(await storage.retryImageCleanup()).toBe(false)
+
+        expect(api.readSite).toHaveBeenCalledTimes(1)
+        expect(api.from).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+        expect(storage.getPendingImageCleanupCount()).toBe(1)
+        vi.resetModules()
+        const reopened = await import('../src/services/storage')
+        expect(reopened.getPendingImageCleanupCount()).toBe(1)
+        expect(await reopened.retryImageCleanup()).toBe(true)
+        expect(api.readSite).toHaveBeenCalledTimes(2)
+        expect(api.remove).toHaveBeenCalledTimes(1)
+        expect(api.remove).toHaveBeenCalledWith(['feed/awaiting-check.png'])
+        expect(reopened.getPendingImageCleanupCount()).toBe(0)
+    })
+
+    it('waits for reference verification before deletion and shares one lookup between concurrent retries', async () => {
+        const storage = await import('../src/services/storage')
+        storage.queueImageCleanup(['feed/verified-first.png'])
+        let completeLookup!: (site: SiteData) => void
+        api.readSite.mockImplementationOnce(() => new Promise(resolve => { completeLookup = resolve }))
+
+        const first = storage.retryImageCleanup()
+        const second = storage.retryImageCleanup()
+
+        expect(api.readSite).toHaveBeenCalledTimes(1)
+        expect(api.from).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+        completeLookup(unreferencedSite())
+        expect(await Promise.all([first, second])).toEqual([true, true])
+        expect(api.remove).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not persist ambiguous RPC uploads as safe cleanup candidates', async () => {
+        const { saveSite, getPendingImageCleanupCount } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png()
+        api.rpc.mockRejectedValueOnce(new TypeError('Response lost after a possible commit'))
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('저장 결과를 확인하지 못했습니다')
+
+        expect(api.rpc).toHaveBeenCalledTimes(1)
+        expect(api.upload).toHaveBeenCalledTimes(1)
+        expect(api.readSite).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+        expect(getPendingImageCleanupCount()).toBe(0)
+        expect(window.localStorage.length).toBe(0)
+        vi.resetModules()
+        const reopened = await import('../src/services/storage')
+        expect(reopened.getPendingImageCleanupCount()).toBe(0)
+        expect(await reopened.retryImageCleanup()).toBe(true)
+        expect(api.readSite).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+    })
+
+    it('persists only replaced paths after committed DB success when deletion fails', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png()
+        api.remove.mockResolvedValueOnce({ error: { message: 'Temporary delete failure' } })
+
+        const result = await saveSite(draft, expected)
+
+        expect(result.cleanupWarning).toContain('내용은 저장됐지만')
+        expect(api.rpc).toHaveBeenCalledTimes(1)
+        const storedPaths = Array.from({ length: window.localStorage.length }, (_, index) => {
+            return JSON.parse(window.localStorage.getItem(window.localStorage.key(index)!)!).path
+        })
+        expect(storedPaths).toEqual(['profile/old.png'])
+        expect(storedPaths).not.toContain(result.site.profile.profile_image_path)
+        vi.resetModules()
+        const reopened = await import('../src/services/storage')
+        expect(reopened.getPendingImageCleanupCount()).toBe(1)
+        expect(await reopened.retryImageCleanup()).toBe(true)
+        expect(api.rpc).toHaveBeenCalledTimes(1)
+        expect(api.remove.mock.calls.map(call => call[0])).toEqual([['profile/old.png'], ['profile/old.png']])
+    })
+
+    it('shows memory-only cleanup guidance after persistence failure and clears it after recovery', async () => {
+        const localStorage = memoryStorage()
+        localStorage.setItem.mockImplementationOnce(() => { throw new Error('QuotaExceededError') })
+        vi.stubGlobal('window', { localStorage })
+        const storage = await import('../src/services/storage')
+        storage.queueImageCleanup(['feed/memory-only.png'])
+
+        expect(storage.getPendingImageCleanupCount()).toBe(1)
+        expect(storage.imageCleanupWarning()).toContain('정리 기록을 보관하지 못했습니다')
+        expect(await storage.retryImageCleanup()).toBe(true)
+        expect(api.remove).toHaveBeenCalledWith(['feed/memory-only.png'])
+        expect(storage.imageCleanupWarning()).toBeNull()
     })
 })

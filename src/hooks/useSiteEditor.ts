@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getPendingImageCleanupCount, retryImageCleanup, saveSite } from '../services/save'
+import { getPendingImageCleanupCount, imageCleanupWarning, retryImageCleanup, saveSite } from '../services/save'
 import type { SiteData, SiteEditDraft } from '../types/site'
 import { isEditorDirty } from '../utils/editorDirty'
 import { toDraft } from '../utils/siteDraft'
@@ -26,7 +26,7 @@ export function useSiteEditor({ signingOut, authBlocked, canWrite, onLeaveGuardC
     const [saving, setSaving] = useState(false)
     const [saveError, setSaveError] = useState<string | null>(null)
     const [saved, setSaved] = useState(false)
-    const [cleanupWarning, setCleanupWarning] = useState<string | null>(null)
+    const [cleanupWarning, setCleanupWarning] = useState<string | null>(() => imageCleanupWarning())
     const [cleaning, setCleaning] = useState(false)
     const [editorVersion, setEditorVersion] = useState(0)
 
@@ -106,7 +106,7 @@ export function useSiteEditor({ signingOut, authBlocked, canWrite, onLeaveGuardC
         } catch (error) {
             if (mounted.current) {
                 setSaveError(error instanceof Error ? error.message : '저장하지 못했습니다. 다시 시도해 주세요.')
-                if (getPendingImageCleanupCount() > 0) setCleanupWarning('미저장 이미지 정리가 남아 있습니다. 다시 시도해 주세요.')
+                if (getPendingImageCleanupCount() > 0) setCleanupWarning(imageCleanupWarning('미저장 이미지 정리가 남아 있습니다. 다시 시도해 주세요.'))
             }
         } finally {
             savingRef.current = false
@@ -120,7 +120,7 @@ export function useSiteEditor({ signingOut, authBlocked, canWrite, onLeaveGuardC
         setCleaning(true)
         try {
             const complete = await retryImageCleanup()
-            if (mounted.current) setCleanupWarning(complete ? null : '일부 이전 이미지 정리가 남아 있습니다. 다시 시도해 주세요.')
+            if (mounted.current) setCleanupWarning(complete ? null : imageCleanupWarning('일부 이전 이미지 정리가 남아 있습니다. 다시 시도해 주세요.'))
         } catch {
             if (mounted.current) setCleanupWarning('이미지 정리를 완료하지 못했습니다. 다시 시도해 주세요.')
         } finally {

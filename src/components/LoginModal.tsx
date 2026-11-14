@@ -63,10 +63,11 @@ function OpenLoginModal({ onClose, onLoginSuccess }: Omit<LoginModalProps, 'isOp
     }
 
     return (
-        <Modal id="loginModal" label="관리자 로그인" onClose={close}>
+        <Modal id="loginModal" label="관리자 로그인" onClose={close} closeDisabled={pending}>
             <form className="modal card pdLg flexColumn gapSm" noValidate onSubmit={login} aria-busy={pending}>
                 <input
                     ref={passwordRef}
+                    data-modal-autofocus=""
                     className="widthFull h30 pdSide border borderRad"
                     type="password"
                     placeholder="비밀번호"
@@ -83,6 +84,9 @@ function OpenLoginModal({ onClose, onLoginSuccess }: Omit<LoginModalProps, 'isOp
                 {(authConfigurationError || error) && <p role="alert">{authConfigurationError || error}</p>}
                 <button type="submit" className="btn h30 border borderRad widthFull" disabled={pending || !!authConfigurationError}>
                     {pending ? '로그인 중…' : '로그인'}
+                </button>
+                <button type="button" className="btn h30 border borderRad widthFull" disabled={pending} onClick={close} aria-label="로그인 창 닫기">
+                    닫기
                 </button>
             </form>
         </Modal>

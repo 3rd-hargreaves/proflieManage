@@ -2,9 +2,9 @@ import { supabase } from '../lib/supabase'
 import type { SiteData, SiteEditDraft } from '../types/site'
 import { buildSaveData, validateSiteDraft } from '../utils/siteDraft'
 import { isSiteData } from '../utils/siteData'
-import { queueImageCleanup, retryImageCleanup, uploadImage, validateImageFile } from './storage'
+import { imageCleanupWarning, queueImageCleanup, retryImageCleanup, uploadImage, validateImageFile } from './storage'
 
-export { getPendingImageCleanupCount, imageFileName, retryImageCleanup } from './storage'
+export { getPendingImageCleanupCount, imageCleanupWarning, imageFileName, retryImageCleanup } from './storage'
 
 interface SaveResult {
     site: SiteData
@@ -93,6 +93,6 @@ export async function saveSite(draft: SiteEditDraft, expected: SiteData): Promis
     const cleaned = await retryImageCleanup()
     return {
         site,
-        cleanupWarning: cleaned ? null : '내용은 저장됐지만 이전 이미지 정리가 완료되지 않았습니다. 이미지 정리를 다시 시도해 주세요.',
+        cleanupWarning: cleaned ? null : imageCleanupWarning('내용은 저장됐지만 이전 이미지 정리가 완료되지 않았습니다. 이미지 정리를 다시 시도해 주세요.'),
     }
 }

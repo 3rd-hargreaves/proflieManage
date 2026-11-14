@@ -25,7 +25,8 @@
     font-family: 'Pretendard Variable';
     color: var(--typo-color);
 
-    transition: all 0.3s ease;
+    transition: color 0.3s ease, background-color 0.3s ease, border-color 0.3s ease,
+        box-shadow 0.3s ease, opacity 0.3s ease, transform 0.3s ease;
 }
 
 /* 문서 서식 */
@@ -155,20 +156,29 @@ textarea { height: 200px; padding: var(--px-sm); }
     display: none;
 
     height: 100%;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
 
     position: fixed;
-    top: 0;
-    bottom: 0;
+    inset: 0;
     z-index: 9999;
 
     background-color: rgb(from var(--typo-color) r g b / 10%);
     backdrop-filter: blur(2px);
     -webkit-backdrop-filter: blur(2px);
 }
+.modalOveray[open] { display: flex; }
+.modalOveray::backdrop { background: transparent; }
 .modal
 {
     width: 600px;
     max-width: 90%;
+    max-height: 90dvh;
+    overflow-y: auto;
 }
 /* 프로필 사진 */
 .profileImg
@@ -235,9 +245,10 @@ textarea { height: 200px; padding: var(--px-sm); }
 }
 .imgModal
 {
-    width: 600px;
-    max-width: 90%;
-    height: 50%;
+    width: 100%;
+    max-width: 100%;
+    height: 50vh;
+    height: 50dvh;
     aspect-ratio: 1/1;
     object-fit: contain;
 }
@@ -331,4 +342,14 @@ button:disabled { cursor: default; opacity: 0.6; }
     font-size: 16px;
     text-align: left;
     cursor: grab;
+}
+
+@media (prefers-reduced-motion: reduce)
+{
+    *, *::before, *::after, *::backdrop
+    {
+        transition: none !important;
+        animation: none !important;
+        scroll-behavior: auto !important;
+    }
 }

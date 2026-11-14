@@ -11,6 +11,7 @@
         "test:format": "node --experimental-strip-types --test tests/sectionFormat.test.ts",
         "test:editor": "node --experimental-strip-types --test tests/editorDirty.test.ts tests/sortLock.test.ts",
         "test:editor:browser": "node tests/editor.browser.mjs",
+        "test:security:browser": "node tests/security.browser.mjs",
         "test:services": "vitest run",
         "preview": "vite preview"
     },

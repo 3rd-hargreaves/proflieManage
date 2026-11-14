@@ -1,5 +1,7 @@
 import { supabase } from '../lib/supabase'
 import { validateImageUpload } from '../utils/uploadLimits'
+import { createCleanupJournal } from '../utils/cleanupJournal'
+import { loadSite } from './site'
 
 export { imageFileName } from '../utils/imageFileName'
 
@@ -19,7 +21,9 @@ export interface UploadedImage {
 
 const uploadedFiles = new WeakMap<File, Partial<Record<ImageFolder, CachedUpload>>>()
 const uploadsByPath = new Map<string, CachedUpload>()
-const pendingCleanup = new Set<string>()
+const pendingCleanup = createCleanupJournal(`${import.meta.env.VITE_SUPABASE_URL?.trim() ?? ''}/${imageBucket}`, () => {
+    return typeof window === 'undefined' ? null : window.localStorage
+})
 let cleanupInFlight: Promise<boolean> | null = null
 
 export function getImageUrl(path: string | null): string | undefined {
@@ -56,27 +60,46 @@ export function queueImageCleanup(paths: Iterable<string>): void {
 }
 
 export function getPendingImageCleanupCount(): number {
-    return pendingCleanup.size
+    return pendingCleanup.paths().length
+}
+
+export function imageCleanupWarning(message = '이전 이미지 정리가 남아 있습니다. 다시 시도해 주세요.'): string | null {
+    if (!getPendingImageCleanupCount()) return null
+    return pendingCleanup.hasPersistenceError()
+        ? `${message} 정리 기록을 보관하지 못했습니다. 이 화면에서 정리 재시도를 완료해 주세요.`
+        : message
 }
 
 export async function retryImageCleanup(): Promise<boolean> {
     if (cleanupInFlight) return cleanupInFlight
-    if (!pendingCleanup.size) return true
+    if (!getPendingImageCleanupCount()) return true
     if (!supabase) return false
 
     const client = supabase
     cleanupInFlight = (async () => {
-        const paths = Array.from(pendingCleanup)
-        for (let start = 0; start < paths.length; start += 100) {
-            const batch = paths.slice(start, start + 100)
+        pendingCleanup.retryPersistence()
+        const paths = pendingCleanup.paths()
+        // A recovered queue can be stale. Fail closed if references are unknown.
+        let retained: Set<string>
+        try {
+            const site = await loadSite(AbortSignal.timeout(10000))
+            retained = new Set(site.feed.map(image => image.image_path))
+            if (site.profile.profile_image_path) retained.add(site.profile.profile_image_path)
+        } catch {
+            return false
+        }
+        for (const path of paths) if (retained.has(path)) pendingCleanup.remove(path)
+        const removable = paths.filter(path => !retained.has(path))
+        for (let start = 0; start < removable.length; start += 100) {
+            const batch = removable.slice(start, start + 100)
             try {
                 const { error } = await client.storage.from(imageBucket).remove(batch)
-                if (!error) for (const path of batch) pendingCleanup.delete(path)
+                if (!error) for (const path of batch) pendingCleanup.remove(path)
             } catch {
                 // A failed delete is safe to retry, including after a lost response.
             }
         }
-        return pendingCleanup.size === 0
+        return getPendingImageCleanupCount() === 0
     })()
 
     try {

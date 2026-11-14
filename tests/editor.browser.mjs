@@ -103,6 +103,7 @@ try {
     await fs.writeFile(boundaryPicture,boundaryImage);await fs.writeFile(invalidPicture,image)
     const apiPort=await listen(api),vitePort=await freePort(),debugPort=await freePort()
     const appUrl=`http://127.0.0.1:${vitePort}`
+    const cleanupPrefix=`profileManage:cleanup:v1:${encodeURIComponent(`http://127.0.0.1:${apiPort}/site-images`)}:`
     vite=spawn(process.execPath,[path.join(project,'node_modules/vite/bin/vite.js'),'--host','127.0.0.1','--port',String(vitePort),'--strictPort'],{cwd:project,env:{...process.env,VITE_SUPABASE_URL:`http://127.0.0.1:${apiPort}`,VITE_SUPABASE_PUBLISHABLE_KEY:'test-publishable-key',VITE_ADMIN_EMAIL:user.email,VITE_ADMIN_USER_ID:user.id,VITE_SUPABASE_STORAGE_BUCKET:'site-images'},windowsHide:true,stdio:['ignore','pipe','pipe']})
     vite.on('error',error=>{launchError=error})
     for(const stream of [vite.stdout,vite.stderr])stream.on('data',chunk=>{viteLogs=(viteLogs+chunk.toString()).slice(-3000)})
@@ -141,14 +142,15 @@ try {
     const button=async pattern=>js(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>new RegExp(${JSON.stringify(pattern)}).test(b.textContent));if(!b)throw new Error('Missing button '+${JSON.stringify(pattern)});b.click();return true})()`)
     const set=async(selector,value,index=0)=>js(`(()=>{const el=document.querySelectorAll(${JSON.stringify(selector)})[${index}];const proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`)
     const nativeClick=async selector=>{const point=await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);await cdp('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1})}
-    const key=async(code,key=code)=>{await cdp('Input.dispatchKeyEvent',{type:'keyDown',code,key,windowsVirtualKeyCode:code==='Space'?32:code==='Enter'?13:code==='Escape'?27:code==='ArrowDown'?40:code==='ArrowUp'?38:0});await cdp('Input.dispatchKeyEvent',{type:'keyUp',code,key});await pause(180)}
+    const clickWithoutScroll=async selector=>{const point=await js(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);await cdp('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1})}
+    const key=async(code,key=code,modifiers=0)=>{await cdp('Input.dispatchKeyEvent',{type:'keyDown',code,key,modifiers,windowsVirtualKeyCode:code==='Space'?32:code==='Enter'?13:code==='Escape'?27:code==='Tab'?9:code==='ArrowDown'?40:code==='ArrowUp'?38:0});await cdp('Input.dispatchKeyEvent',{type:'keyUp',code,key,modifiers});await pause(180)}
     const focus=async(selector,index=0)=>{await js(`document.querySelectorAll(${JSON.stringify(selector)})[${index}].focus()`);await pause(100)}
     const sessionValue=session()
     await cdp('Runtime.enable');await cdp('Page.enable');await cdp('DOM.enable')
     await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:1100,deviceScaleFactor:1,mobile:false})
     await cdp('Page.addScriptToEvaluateOnNewDocument',{source:`if(sessionStorage.getItem('editor-test-no-session')==='1')localStorage.removeItem('sb-127-auth-token');else localStorage.setItem('sb-127-auth-token',${JSON.stringify(JSON.stringify(sessionValue))});`})
     const navigate=async destination=>{await cdp('Page.navigate',{url:appUrl+destination});await pause(400)}
-    const reset=async(authenticated=true,feedCount=null)=>{mode={userStatus:200,userDelay:0,tokenDelay:0,saveDelay:0};site=initial();if(feedCount!==null)site.feed=Array.from({length:feedCount},(_,i)=>({id:2000+i,sort_order:i+1,image_path:`feed/saved-${i+1}.png`}));acceptDialog=true;await js(`try{sessionStorage.setItem('editor-test-no-session',${JSON.stringify(authenticated?'0':'1')})}catch{}`);await navigate('/');acceptDialog=false;await until('!!document.querySelector(".edit")','main ready');if(authenticated){await until("document.querySelector('.edit')?.getAttribute('aria-label')==='수정 화면 열기'",'verified main');await nativeClick('.edit');await until('!!document.querySelector("#profileName")','editor ready')}dialogs.length=0;requests.length=0}
+    const reset=async(authenticated=true,feedCount=null,preserveCleanup=false)=>{mode={userStatus:200,userDelay:0,tokenDelay:0,saveDelay:0};site=initial();if(feedCount!==null)site.feed=Array.from({length:feedCount},(_,i)=>({id:2000+i,sort_order:i+1,image_path:`feed/saved-${i+1}.png`}));acceptDialog=true;await js(`try{sessionStorage.setItem('editor-test-no-session',${JSON.stringify(authenticated?'0':'1')});if(!${JSON.stringify(preserveCleanup)})for(const key of Object.keys(localStorage))if(key.startsWith(${JSON.stringify(cleanupPrefix)}))localStorage.removeItem(key)}catch{}`);await navigate('/');acceptDialog=false;await until('!!document.querySelector(".edit")','main ready');if(authenticated){await until("document.querySelector('.edit')?.getAttribute('aria-label')==='수정 화면 열기'",'verified main');await nativeClick('.edit');await until('!!document.querySelector("#profileName")','editor ready')}dialogs.length=0;requests.length=0}
     const refresh=()=>js(`void import('/src/lib/supabase.ts').then(({supabase})=>supabase.auth.refreshSession())`)
     const externalSignout=()=>js(`void import('/src/lib/supabase.ts').then(({supabase})=>supabase.auth.signOut({scope:'local'}))`)
     const save=async()=>{await js('document.querySelector("button[type=submit]").click()');await until('/저장했습니다|저장 성공/.test(document.body.innerText) && !document.querySelector("button[type=submit]").matches(":disabled")','save complete')}
@@ -156,6 +158,7 @@ try {
     const selectVirtualFile=async(selector,file)=>{await js(`(()=>{const input=document.querySelector(${JSON.stringify(selector)}),file=${JSON.stringify(file)},transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(file.size)],file.name,{type:file.type}));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}))})()`);await pause(100)}
     const loadRequests=()=>requests.filter(r=>r.path==='/rest/v1/rpc/load_site'&&r.method==='POST')
     const directTableRequests=()=>requests.filter(r=>/^\/rest\/v1\/(profile|theme|sections|keywords|feed_images)$/.test(r.path))
+    const cleanupRecords=()=>js(`Object.keys(localStorage).filter(key=>key.startsWith(${JSON.stringify(cleanupPrefix)})).map(key=>JSON.parse(localStorage.getItem(key)))`)
     await navigate('/');await reset()
     check(await hasEditor(),'검증된 관리자만 수정 화면 열기')
     check(await js(`(()=>{const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return !e.defaultPrevented})()`),'변경 전에는 이탈 경고 없음')
@@ -404,6 +407,76 @@ try {
         check(cancelledRetry.cancelled && loadRequests().length===4 && await js(`document.querySelector('#profileName').value==='current 이름' && document.querySelector('[data-section] textarea').value==='current 둘째 내용' && !document.querySelector('main [role=alert]')`),'연속 조회 실패 뒤 재시도도 이탈 시 취소되어 최신 편집 내용을 보존')
         await js('history.back()');await until(`document.querySelector('.profileName')?.textContent==='current 이름'`,'query after repeated errors and cancellation')
         check(loadRequests().length===5 && directTableRequests().length===0 && await js(`document.title==='current 이름' && document.querySelector('main').getAttribute('aria-busy')==='false'`),'조회 실패·재시도·취소를 반복한 뒤에도 다음 메인 조회 정상 복구')
+
+        await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:600,deviceScaleFactor:1,mobile:false})
+        await reset(false);await until(`document.querySelector('.profileName')?.textContent==='검증 이름'`,'modal main ready')
+        await js(`(()=>{const style=document.body.style;style.setProperty('overflow-y','auto','important');style.setProperty('padding-right','7px');window.scrollTo({top:250,behavior:'instant'});document.querySelector('.edit').focus({preventScroll:true});window.__modalScroll={x:scrollX,y:scrollY};window.__modalStyles=['position','top','left','width','overflow-x','overflow-y','padding-right'].map(property=>({property,value:style.getPropertyValue(property),priority:style.getPropertyPriority(property)}));window.__backgroundClicks=0;document.querySelector('.edit').addEventListener('click',()=>window.__backgroundClicks++)})()`)
+        await clickWithoutScroll('.edit');await until(`document.querySelector('#loginModal')?.matches(':modal')`,'native login dialog')
+        check(await js(`document.querySelector('#loginModal').tagName==='DIALOG' && document.activeElement===document.querySelector('#loginModal input[type=password]') && !document.querySelector('#loginModal button[aria-label="로그인 창 닫기"]').matches(':disabled')`),'로그인 native dialog의 최초 포커스와 명시적 닫기 버튼 제공')
+        await focus('#loginModal button[aria-label="로그인 창 닫기"]');await key('Tab')
+        const tabWrapped=await js(`document.activeElement===document.querySelector('#loginModal input[type=password]')`)
+        await key('Tab','Tab',8)
+        check(tabWrapped && await js(`document.activeElement===document.querySelector('#loginModal button[aria-label="로그인 창 닫기"]')`),'로그인 Tab·Shift+Tab이 모달 안에서 양방향 순환')
+        await js(`document.querySelector('.edit').focus()`)
+        const lockedScroll=await js('scrollY')
+        await cdp('Input.dispatchMouseEvent',{type:'mouseWheel',x:5,y:5,deltaX:0,deltaY:250});await pause(100)
+        check(await js(`document.querySelector('#loginModal').contains(document.activeElement) && document.activeElement!==document.querySelector('.edit') && document.body.style.position==='fixed' && scrollY===${JSON.stringify(lockedScroll)} && window.__modalScroll.y>0`),'로그인 중 실제 배경 포커스 이동과 휠 스크롤 차단')
+        await nativeClick('#loginModal button[aria-label="로그인 창 닫기"]');await until(`!document.querySelector('#loginModal')`,'login explicit close')
+        check(await js(`document.activeElement===document.querySelector('.edit') && Math.abs(scrollY-window.__modalScroll.y)<=1 && window.__modalStyles.every(({property,value,priority})=>document.body.style.getPropertyValue(property)===value && document.body.style.getPropertyPriority(property)===priority)`),'로그인 닫기 후 호출 버튼 포커스·스크롤 좌표·인라인 스타일 복원')
+        await clickWithoutScroll('.edit');await until(`document.querySelector('#loginModal')?.matches(':modal')`,'login backdrop ready');await js('window.__backgroundClicks=0')
+        await clickWithoutScroll('.edit');await until(`!document.querySelector('#loginModal')`,'native login backdrop close')
+        check(await js(`window.__backgroundClicks===0 && document.activeElement===document.querySelector('.edit') && Math.abs(scrollY-window.__modalScroll.y)<=1`),'로그인 바깥 실제 클릭은 모달만 닫고 배경 버튼 실행 차단')
+
+        await reset(false);await nativeClick('.edit');await until(`document.querySelector('#loginModal')?.matches(':modal')`,'pending modal ready')
+        mode.tokenStatus=400;mode.tokenDelay=1600;await set('#loginModal input','test-only-password');await nativeClick('#loginModal button[type=submit]')
+        await until(`document.querySelector('#loginModal form')?.getAttribute('aria-busy')==='true'`,'pending login dialog')
+        await nativeClick('#loginModal button[aria-label="로그인 창 닫기"]');await key('Escape');await clickWithoutScroll('.edit');await key('Tab')
+        await js(`document.querySelector('.edit').focus()`)
+        check(await js(`document.querySelector('#loginModal')?.matches(':modal') && [...document.querySelectorAll('#loginModal input, #loginModal button')].every(field=>field.matches(':disabled')) && document.querySelector('#loginModal').contains(document.activeElement) && document.body.style.position==='fixed'`) && requests.filter(r=>r.path==='/auth/v1/token'&&r.method==='POST').length===1,'로그인 pending은 닫기·Escape·배경 클릭·포커스 이탈을 차단')
+        await until(`document.querySelector('#loginModal [role=alert]')?.textContent.includes('비밀번호') && !document.querySelector('#loginModal button[aria-label="로그인 창 닫기"]').matches(':disabled')`,'pending login failed')
+        await nativeClick('#loginModal button[aria-label="로그인 창 닫기"]');await until(`!document.querySelector('#loginModal')`,'pending login close after failure')
+        check(await js(`document.activeElement===document.querySelector('.edit') && document.body.style.position===''`),'로그인 실패 후 닫기 재활성화와 포커스·스크롤 잠금 복구')
+
+        await reset(false);await until(`!!document.querySelector('#feedOpenBtn')`,'gallery main ready');await nativeClick('#feedOpenBtn')
+        await js(`(()=>{const image=document.querySelector('.picList img');image.scrollIntoView({block:'center'});image.focus({preventScroll:true});window.__imageOpener=image;window.__imageScroll=scrollY;window.__backgroundClicks=0;document.querySelector('.edit').addEventListener('click',()=>window.__backgroundClicks++)})()`)
+        await clickWithoutScroll('.picList img');await until(`document.querySelector('#imgModal')?.matches(':modal')`,'native image dialog')
+        await key('Tab');await key('Tab','Tab',8);await js(`document.querySelector('.edit').focus()`)
+        check(await js(`document.querySelector('#imgModal').tagName==='DIALOG' && document.activeElement===document.querySelector('#imgModal button[aria-label="이미지 확대 창 닫기"]') && document.body.style.position==='fixed'`),'이미지 확대 native dialog는 닫기에 포커스를 두고 Tab·배경 포커스를 가둠')
+        await nativeClick('#imgModal button[aria-label="이미지 확대 창 닫기"]');await until(`!document.querySelector('#imgModal')`,'image explicit close')
+        check(await js(`document.activeElement===window.__imageOpener && Math.abs(scrollY-window.__imageScroll)<=1 && document.body.style.position===''`),'이미지 닫기 버튼은 원래 사진 포커스와 스크롤 복원')
+        await key('Enter');await until(`document.querySelector('#imgModal')?.matches(':modal')`,'image keyboard open');await key('Escape');await until(`!document.querySelector('#imgModal')`,'image keyboard close')
+        check(await js(`document.activeElement===window.__imageOpener && document.body.style.position===''`),'이미지 확대 Enter 열기·Escape 닫기와 포커스 복원')
+        await clickWithoutScroll('.picList img');await until(`document.querySelector('#imgModal')?.matches(':modal')`,'image backdrop ready');await clickWithoutScroll('.edit');await until(`!document.querySelector('#imgModal')`,'image native backdrop close')
+        check(await js(`window.__backgroundClicks===0 && !document.querySelector('#loginModal') && document.activeElement===window.__imageOpener && Math.abs(scrollY-window.__imageScroll)<=1`),'이미지 모달 바깥 클릭도 배경 로그인 실행 없이 사진 포커스 복원')
+
+        await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:1100,deviceScaleFactor:1,mobile:false});await reset()
+        await cdp('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]})
+        check(await js(`(()=>{const item=document.querySelector('.sortableItem'),previous=item.style.transition;item.style.transition='transform 2s';const style=getComputedStyle(item),reduced=matchMedia('(prefers-reduced-motion: reduce)').matches && style.transitionDuration.split(',').every(value=>parseFloat(value)===0) && style.animationName==='none' && style.scrollBehavior==='auto';item.style.transition=previous;return reduced})()`),'reduced-motion 환경에서 inline 드래그 transition·animation·부드러운 스크롤 제거')
+        await focus('[data-section] .dragHandle');await key('Space',' ');await key('ArrowDown');await key('Space',' ');await save()
+        check(requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').at(-1).body.p_data.sections.map(row=>row.id).join(',')==='11,10','reduced-motion에서도 키보드 정렬과 순서 저장 유지')
+        await cdp('Emulation.setEmulatedMedia',{features:[]})
+
+        await reset();await nativeClick('#feedItems .picEditItem .btn');mode.deleteFailure=true;await save()
+        const journal=await cleanupRecords()
+        check(journal.length===1 && journal[0].path==='feed/first.png' && Number.isSafeInteger(journal[0].queuedAt),'삭제 실패한 이미지 정리 경로와 시각을 브라우저에 기록')
+        mode.deleteFailure=false;requests.length=0;await navigate('/edit')
+        await until(`[...document.querySelectorAll('button')].some(button=>button.textContent==='이미지 정리 다시 시도')`,'cleanup journal recovered')
+        check((await cleanupRecords()).length===1 && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='DELETE')||r.path==='/rest/v1/rpc/save_site'),'새로고침 후 정리 기록과 수동 재시도 복구·자동 삭제 없음')
+        mode.loadStatus=503;requests.length=0;await button('^이미지 정리 다시 시도$')
+        await untilRequests(()=>loadRequests().length===1,'cleanup reference check failed')
+        await until(`[...document.querySelectorAll('button')].some(button=>button.textContent==='이미지 정리 다시 시도' && !button.matches(':disabled'))`,'cleanup reference failure complete')
+        check((await cleanupRecords()).length===1 && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='DELETE')||r.path==='/rest/v1/rpc/save_site'),'현재 참조 조회 실패 시 삭제를 막고 정리 기록 유지')
+        mode.loadStatus=200;requests.length=0;await button('^이미지 정리 다시 시도$')
+        await until(`![...document.querySelectorAll('button')].some(button=>button.textContent.includes('이미지 정리 다시 시도') || button.textContent.includes('이미지 정리 중'))`,'recovered cleanup success')
+        const referenceIndex=requests.findIndex(r=>r.path==='/rest/v1/rpc/load_site'&&r.method==='POST'),deleteIndex=requests.findIndex(r=>r.path.startsWith('/storage/')&&r.method==='DELETE')
+        check(referenceIndex>=0 && deleteIndex>referenceIndex && requests[deleteIndex].body.prefixes.join('|')==='feed/first.png' && !requests.some(r=>r.path==='/rest/v1/rpc/save_site') && (await cleanupRecords()).length===0 && site.feed.length===1,'복구한 수동 정리는 최신 참조 확인 후 미참조 파일만 삭제·기록 해제')
+
+        await reset();await nativeClick('#feedItems .picEditItem .btn');mode.deleteFailure=true;await save()
+        site.feed=[{id:20,sort_order:1,image_path:'feed/first.png'},...site.feed.map((row,index)=>({...row,sort_order:index+2}))]
+        mode.deleteFailure=false;requests.length=0;await navigate('/edit')
+        await until(`[...document.querySelectorAll('button')].some(button=>button.textContent==='이미지 정리 다시 시도')`,'referenced cleanup recovered')
+        await button('^이미지 정리 다시 시도$');await until(`![...document.querySelectorAll('button')].some(button=>button.textContent.includes('이미지 정리 다시 시도') || button.textContent.includes('이미지 정리 중'))`,'referenced cleanup cancelled')
+        check(loadRequests().length===2 && (await cleanupRecords()).length===0 && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='DELETE')||r.path==='/rest/v1/rpc/save_site') && site.feed.some(row=>row.image_path==='feed/first.png'),'복구 기록의 파일이 다시 참조 중이면 삭제를 취소하고 기록만 해제')
     }
     check(errors.length===0,'브라우저 실행 예외 없음')
     console.log(JSON.stringify({phase,passed:passed.length,checks:passed,errors},null,2))
