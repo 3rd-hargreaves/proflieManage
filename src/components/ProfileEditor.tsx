@@ -32,7 +32,7 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
         <button className="btn h30 border borderRad" type="button" onClick={() => fileInput.current?.click()}>
           이미지 업로드
         </button>
-        <input
+        <input className="borderRad"
           ref={fileInput}
           id="profileFile"
           style={{ display: 'none' }}
@@ -50,7 +50,7 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
       </div>
       <input
         id="profileName"
-        className="widthFull h30 pdSide border"
+        className="widthFull h30 pdSide border borderRad"
         type="text"
         placeholder="이름"
         aria-label="이름"
@@ -62,7 +62,7 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
       />
       <input
         id="profileMessage"
-        className="widthFull h30 pdSide border"
+        className="widthFull h30 pdSide border borderRad"
         type="text"
         placeholder="상태 메시지"
         aria-label="상태 메시지"

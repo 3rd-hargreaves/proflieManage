@@ -221,7 +221,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
                   <SectionEditor
                     value={section}
                     autoFocus={section.id === focusedSection}
-                    dragHandle={<button {...handleProps} className="dragHandle h30 widthFull border borderRad pdSide"><span aria-hidden="true">↕</span> 순서 이동</button>}
+                    dragHandle={<button {...handleProps} className="btn dragHandle h30 widthFull border borderRad pdSide"><span aria-hidden="true">↕</span> 순서 이동</button>}
                     sorting={sorting}
                     onChange={value => change({ ...draft, sections: draft.sections.map(item => item.id === value.id ? value : item) })}
                     onDelete={() => change({ ...draft, sections: draft.sections.filter(item => item.id !== section.id) })}
@@ -245,7 +245,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
               <p className="text3"> ,로 구분 </p>
               <input
                 id="keywords"
-                className="widthFull h30 pdSide border"
+                className="widthFull h30 pdSide border borderRad"
                 type="text"
                 placeholder="키워드"
                 aria-label="키워드"

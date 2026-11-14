@@ -45,7 +45,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
       <form className="modal card pdLg flexColumn gapSm" noValidate onSubmit={login}>
         <input
           ref={passwordRef}
-          className="widthFull h30 pdSide border"
+          className="widthFull h30 pdSide border borderRad"
           type="password"
           placeholder="비밀번호"
           aria-label="비밀번호"

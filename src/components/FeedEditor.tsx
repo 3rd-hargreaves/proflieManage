@@ -51,7 +51,7 @@ export default function FeedEditor({ value, onChange, disabled, sorting, onSorti
         <button className="btn h30 border borderRad" type="button" disabled={sorting} onClick={() => fileInput.current?.click()}>
           이미지 업로드
         </button>
-        <input
+        <input className="borderRad"
           ref={fileInput}
           id="feedFiles"
           style={{ display: 'none' }}

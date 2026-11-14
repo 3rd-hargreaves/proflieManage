@@ -15,7 +15,7 @@ export default function SectionEditor({ value, autoFocus = false, dragHandle, so
     <div className="card widthFull pdLg flexColumn gapSm" data-section="">
       {dragHandle}
       <input
-        className="widthFull h30 pdSide border"
+        className="widthFull h30 pdSide border borderRad"
         type="text"
         placeholder="섹션 제목"
         aria-label="섹션 제목"
@@ -28,7 +28,7 @@ export default function SectionEditor({ value, autoFocus = false, dragHandle, so
       />
       <p className="text3">*볼드체* _밑줄_ /이탤릭체/ -가로줄- | 표 | </p>
       <textarea
-        className="pdSm border"
+        className="pdSm border borderRad"
         placeholder="섹션 내용"
         aria-label="섹션 내용"
         value={value.content}
