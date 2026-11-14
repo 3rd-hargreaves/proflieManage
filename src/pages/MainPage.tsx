@@ -4,6 +4,7 @@ import type { GalleryImage } from '../components/FeedGallery'
 import ImageModal from '../components/ImageModal'
 import LoginModal from '../components/LoginModal'
 import SiteImage from '../components/SiteImage'
+import SectionContent from '../components/SectionContent'
 import { loadSite } from '../services/site'
 import { getImageUrl } from '../services/storage'
 import type { SiteData } from '../types/site'
@@ -109,7 +110,7 @@ export default function MainPage({ isAdmin, onOpenEditor, onLoginSuccess }: Main
               {site.sections.map(section => (
                 <div key={section.id} className="card widthFull pdLg flexColumn gapSm">
                   <p className="widthFull text2 mainColorText bold sectionText">{section.title}</p>
-                  <p className="widthFull text3 sectionText">{section.content}</p>
+                  <SectionContent content={section.content} label={section.title} />
                 </div>
               ))}
               {site.sections.length === 0 && <p className="card pdLg text3">등록된 섹션이 없습니다.</p>}

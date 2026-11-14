@@ -184,6 +184,30 @@ textarea { height: 200px; padding: var(--px-sm); }
 .profileName, .profileMessage, .sectionText { overflow-wrap: anywhere; }
 .profileMessage, .sectionText { white-space: pre-wrap; }
 
+/* 섹션 내용 서식 */
+.sectionContent { min-width: 0; overflow-wrap: anywhere; }
+.sectionProse { white-space: pre-wrap; min-height: 1.5em; }
+.sectionContent > * + * { margin-top: var(--px-md); }
+.sectionContent strong, .sectionContent u, .sectionContent em, .sectionContent del { color: inherit; }
+.sectionTableWrap
+{
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+}
+.sectionTableWrap:focus-visible { outline: 2px solid var(--main-color); outline-offset: 2px; }
+.sectionTable { width: 100%; border-collapse: collapse; }
+.sectionTable th, .sectionTable td
+{
+    min-width: 6rem;
+    padding: var(--px-md);
+    border: 1px solid var(--main-color);
+    text-align: left;
+    vertical-align: top;
+    white-space: pre-wrap;
+}
+.sectionTable th { background-color: var(--sub-color); color: var(--main-color); }
+
 /* 키워드 */
 .keywordList { flex-wrap: wrap; }
 .keyword
