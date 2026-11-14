@@ -1,7 +1,7 @@
 import { supabase } from '../lib/supabase'
 import type { SiteData, SiteEditDraft } from '../types/site'
-import { isHexColor } from '../utils/validation'
-import { feedImageLimit, validateFeedImageCount } from '../utils/uploadLimits'
+import { buildSaveData, validateSiteDraft } from '../utils/siteDraft'
+import { isSiteData } from '../utils/siteData'
 import { queueImageCleanup, retryImageCleanup, uploadImage, validateImageFile } from './storage'
 
 export { getPendingImageCleanupCount, imageFileName, retryImageCleanup } from './storage'
@@ -32,27 +32,6 @@ function errorMessage(error: unknown): string {
     return '저장 결과를 확인하지 못했습니다. 입력한 내용은 유지됩니다. 연결 상태를 확인한 뒤 같은 내용으로 다시 저장해 주세요.'
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-function isSiteData(value: unknown): value is SiteData {
-    if (!isRecord(value) || !isRecord(value.profile) || !isRecord(value.theme)) return false
-    const { profile, theme } = value
-    return typeof profile.id === 'number'
-        && typeof profile.name === 'string'
-        && typeof profile.status_message === 'string'
-        && (profile.profile_image_path === null || typeof profile.profile_image_path === 'string')
-        && typeof theme.id === 'number'
-        && ['main_color', 'background_color', 'card_background_color', 'typo_color'].every((key) => typeof theme[key] === 'string')
-        && Array.isArray(value.sections)
-        && value.sections.every((row) => isRecord(row) && typeof row.id === 'number' && typeof row.sort_order === 'number' && typeof row.title === 'string' && typeof row.content === 'string')
-        && Array.isArray(value.keywords)
-        && value.keywords.every((row) => isRecord(row) && typeof row.id === 'number' && typeof row.sort_order === 'number' && typeof row.content === 'string')
-        && Array.isArray(value.feed)
-        && value.feed.every((row) => isRecord(row) && typeof row.id === 'number' && typeof row.sort_order === 'number' && typeof row.image_path === 'string')
-}
-
 function imagePaths(site: SiteData): Set<string> {
     const paths = new Set(site.feed.map((image) => image.image_path))
     if (site.profile.profile_image_path) paths.add(site.profile.profile_image_path)
@@ -62,23 +41,14 @@ function imagePaths(site: SiteData): Set<string> {
 export async function saveSite(draft: SiteEditDraft, expected: SiteData): Promise<SaveResult> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
 
-    const name = draft.profile.name.trim()
-    const statusMessage = draft.profile.statusMessage.trim()
-    const keywords = draft.keywords.split(',').map((keyword) => keyword.trim()).filter(Boolean)
-    if (!name || !statusMessage) throw new Error('이름과 상태 메시지를 입력해 주세요.')
-    if (!Object.values(draft.theme).every(isHexColor)) throw new Error('올바른 색상코드를 입력해 주세요.')
-    if (draft.sections.some((section) => !section.title.trim() || !section.content.trim())) {
-        throw new Error('섹션 제목과 내용을 입력해 주세요.')
-    }
-    if (!keywords.length) throw new Error('키워드를 하나 이상 입력해 주세요.')
-    if (draft.feed.some((image) => !image.file && !image.path)) throw new Error('피드 이미지를 선택해 주세요.')
-    validateFeedImageCount(draft.feed.length, feedImageLimit(expected.feed.length))
+    const issues = validateSiteDraft(draft, expected.feed.length)
+    if (issues.length) throw new Error(issues[0].message)
     if (draft.profile.file) validateImageFile(draft.profile.file, 'profile')
     for (const image of draft.feed) if (image.file) validateImageFile(image.file, 'feed')
 
     const newPaths: string[] = []
     let profilePath = draft.profile.imagePath
-    const feed: { id: number | null; image_path: string }[] = []
+    const feedPaths: string[] = []
     try {
         if (draft.profile.file) {
             const uploaded = await uploadImage(draft.profile.file, 'profile')
@@ -92,7 +62,7 @@ export async function saveSite(draft: SiteEditDraft, expected: SiteData): Promis
                 path = uploaded.path
                 if (uploaded.newlyUploaded) newPaths.push(uploaded.path)
             }
-            feed.push({ id: image.databaseId ?? null, image_path: path })
+            feedPaths.push(path)
         }
     } catch (error) {
         // These files have never been sent to the RPC. Cached uploads from an
@@ -107,22 +77,7 @@ export async function saveSite(draft: SiteEditDraft, expected: SiteData): Promis
     try {
         const { data, error } = await supabase.rpc('save_site', {
             p_expected: expected,
-            p_data: {
-                profile: { name, status_message: statusMessage, profile_image_path: profilePath },
-                theme: {
-                    main_color: draft.theme.mainColor.trim(),
-                    background_color: draft.theme.backgroundColor.trim(),
-                    card_background_color: draft.theme.cardBackgroundColor.trim(),
-                    typo_color: draft.theme.typoColor.trim(),
-                },
-                sections: draft.sections.map((section) => ({
-                    id: section.databaseId ?? null,
-                    title: section.title.trim(),
-                    content: section.content,
-                })),
-                keywords: keywords.map((content, index) => ({ id: expected.keywords[index]?.id ?? null, content })),
-                feed,
-            },
+            p_data: buildSaveData(draft, expected, { profile: profilePath, feed: feedPaths }),
         })
         if (error) throw error
         if (!isSiteData(data)) throw new Error('invalid_save_response')

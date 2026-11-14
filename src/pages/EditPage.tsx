@@ -6,36 +6,29 @@ import SectionEditor from '../components/SectionEditor'
 import ThemeEditor from '../components/ThemeEditor'
 import SortableList from '../components/SortableList'
 import { loadSite } from '../services/site'
-import { getPendingImageCleanupCount, imageFileName, retryImageCleanup, saveSite } from '../services/save'
+import { getPendingImageCleanupCount, retryImageCleanup, saveSite } from '../services/save'
 import type { SiteData, SiteEditDraft } from '../types/site'
-import { applyTheme } from '../utils/theme'
-import { isHexColor, validateRequired } from '../utils/validation'
+import { applyTheme, themeFields, toThemeData } from '../utils/theme'
+import { isHexColor } from '../utils/validation'
+import { toDraft, validateSiteDraft } from '../utils/siteDraft'
+import type { DraftValidationIssue } from '../utils/siteDraft'
 import { isEditorDirty } from '../utils/editorDirty'
 import { feedImageLimit } from '../utils/uploadLimits'
 import type { LeaveGuard } from '../hooks/useGuardedNavigation'
 import { useSortLock } from '../hooks/useSortLock'
 
-function toDraft(site: SiteData): SiteEditDraft {
-    return {
-        profile: {
-            name: site.profile.name,
-            statusMessage: site.profile.status_message,
-            imagePath: site.profile.profile_image_path,
-            file: null,
-        },
-        theme: {
-            mainColor: site.theme.main_color,
-            backgroundColor: site.theme.background_color,
-            cardBackgroundColor: site.theme.card_background_color,
-            typoColor: site.theme.typo_color,
-        },
-        sections: site.sections.map(section => ({
-            id: `section-${section.id}`, databaseId: section.id, title: section.title, content: section.content,
-        })),
-        keywords: site.keywords.map(keyword => keyword.content).join(', '),
-        feed: site.feed.map(image => ({
-            id: `feed-${image.id}`, databaseId: image.id, name: imageFileName(image.image_path), path: image.image_path,
-        })),
+function validationField(form: HTMLFormElement, issue: DraftValidationIssue): HTMLInputElement | HTMLTextAreaElement | null {
+    switch (issue.field) {
+        case 'profile.name': return form.querySelector('#profileName')
+        case 'profile.statusMessage': return form.querySelector('#profileMessage')
+        case 'keywords': return form.querySelector('#keywords')
+        case 'theme': {
+            const variable = themeFields.find(field => field.key === issue.key)?.variable
+            return variable ? form.querySelector(`[data-theme="${variable}"]`) : null
+        }
+        case 'section':
+            return form.querySelectorAll('[data-section]')[issue.index]?.querySelector(issue.key === 'title' ? 'input' : 'textarea') ?? null
+        case 'feed': return null
     }
 }
 
@@ -114,14 +107,8 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
 
     const theme = draft?.theme
     useEffect(() => {
-        if (!theme || !Object.values(theme).every(isHexColor)) return
-        return applyTheme({
-            id: 1,
-            main_color: theme.mainColor,
-            background_color: theme.backgroundColor,
-            card_background_color: theme.cardBackgroundColor,
-            typo_color: theme.typoColor,
-        })
+        if (!theme || !themeFields.every(({ key }) => isHexColor(theme[key]))) return
+        return applyTheme({ id: 1, ...toThemeData(theme) })
     }, [theme])
 
     function change(next: SiteEditDraft) {
@@ -147,25 +134,16 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
         event.preventDefault()
         if (!form.current || !draft || !baseline || savingRef.current || sortLock.getOwner() !== null || signingOut || cleaning || authNotice || !canWrite()) return
 
-        const themeFields = form.current.querySelectorAll<HTMLInputElement>('[data-theme]')
-        for (const field of themeFields) {
-            if (!validateRequired(field)) return
+        const fields = form.current.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input:not([type="file"]), textarea')
+        for (const field of fields) field.setCustomValidity('')
+        const issues = validateSiteDraft(draft, baseline.feed.length)
+        for (const issue of issues) validationField(form.current, issue)?.setCustomValidity(issue.message)
+        if (issues.length) {
+            const field = validationField(form.current, issues[0])
+            if (field) field.reportValidity()
+            else setSaveError(issues[0].message)
+            return
         }
-        for (const field of themeFields) {
-            field.setCustomValidity(isHexColor(field.value) ? '' : '올바른 색상코드를 입력해 주세요.')
-            if (!field.reportValidity()) return
-        }
-        const requiredFields = form.current.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-            '#profileName, #profileMessage, [data-section] input, [data-section] textarea, #keywords',
-        )
-        for (const field of requiredFields) {
-            if (!validateRequired(field)) return
-        }
-        const keywordField = form.current.querySelector<HTMLInputElement>('#keywords')!
-        keywordField.setCustomValidity(
-            draft.keywords.split(',').some(keyword => keyword.trim()) ? '' : '키워드를 하나 이상 입력해 주세요.',
-        )
-        if (!keywordField.reportValidity()) return
 
         savingRef.current = true
         setSaving(true)

@@ -138,7 +138,7 @@ try {
     const hasEditor=()=>js('!!document.querySelector("#profileName")')
     const saveDisabled=()=>js('document.querySelector("button[type=submit]")?.matches(":disabled")')
     const button=async pattern=>js(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>new RegExp(${JSON.stringify(pattern)}).test(b.textContent));if(!b)throw new Error('Missing button '+${JSON.stringify(pattern)});b.click();return true})()`)
-    const set=async(selector,value)=>js(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});const proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`)
+    const set=async(selector,value,index=0)=>js(`(()=>{const el=document.querySelectorAll(${JSON.stringify(selector)})[${index}];const proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`)
     const nativeClick=async selector=>{const point=await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})()`);await cdp('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1})}
     const key=async(code,key=code)=>{await cdp('Input.dispatchKeyEvent',{type:'keyDown',code,key,windowsVirtualKeyCode:code==='Space'?32:code==='Enter'?13:code==='Escape'?27:code==='ArrowDown'?40:code==='ArrowUp'?38:0});await cdp('Input.dispatchKeyEvent',{type:'keyUp',code,key});await pause(180)}
     const focus=async(selector,index=0)=>{await js(`document.querySelectorAll(${JSON.stringify(selector)})[${index}].focus()`);await pause(100)}
@@ -301,6 +301,59 @@ try {
         site=snapshot('fresh');mode.loadDelay=0;await js('history.back()');await until(`document.querySelector('.profileName')?.textContent==='fresh 이름'`,'fresh main snapshot')
         await pause(1800)
         check(delayedEditor?.snapshotName==='stale 이름' && delayedEditor.cancelled && loadRequests().length===2 && directTableRequests().length===0 && await js(`!document.querySelector('#profileName') && document.title==='fresh 이름' && document.querySelector('.sectionText').textContent==='fresh 둘째' && getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()==='#97531b'`),'이탈한 수정 화면의 지연 스냅샷 취소·최신 메인 화면 오염 방지')
+
+        await reset();await selectFile('#profileFile')
+        const invalidFields=[
+            {selector:'#profileName',value:' \t ',message:'이름 항목을 입력해 주세요.',label:'이름 공란'},
+            {selector:'#profileMessage',value:' \t ',message:'상태 메시지 항목을 입력해 주세요.',label:'상태 메시지 공란'},
+            {selector:'[data-section] input',index:1,value:'  ',message:'섹션 제목 항목을 입력해 주세요.',label:'둘째 섹션 제목 공란'},
+            {selector:'[data-section] textarea',index:1,value:'\n \t ',message:'섹션 내용 항목을 입력해 주세요.',label:'둘째 섹션 내용 공란'},
+            {selector:'[data-theme="--main-color"]',value:' \t ',message:'헥스코드 항목을 입력해 주세요.',label:'테마 색상 공란'},
+            {selector:'[data-theme="--sub-color"]',value:'#12',message:'올바른 색상코드를 입력해 주세요.',label:'잘못된 테마 색상'},
+            {selector:'#keywords',value:', ,',message:'키워드를 하나 이상 입력해 주세요.',label:'쉼표만 있는 키워드'},
+            {selector:'#keywords',value:' \t ',message:'키워드를 하나 이상 입력해 주세요.',label:'공백만 있는 키워드'},
+        ]
+        for(const invalid of invalidFields){
+            const index=invalid.index??0,field=`document.querySelectorAll(${JSON.stringify(invalid.selector)})[${index}]`
+            const original=await js(`${field}.value`)
+            await set(invalid.selector,invalid.value,index);await js(`document.querySelector('button[type=submit]').click()`);await pause(70)
+            const rejected=await js(`document.activeElement===${field} && ${field}.validationMessage===${JSON.stringify(invalid.message)} && ${field}.validity.customError`)
+                && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='POST')||r.path==='/rest/v1/rpc/save_site')
+            await set(invalid.selector,original,index)
+            check(rejected && await js(`${field}.validationMessage==='' && !${field}.validity.customError`),`${invalid.label}: 대상 포커스·메시지·저장 차단과 수정 후 오류 해제`)
+        }
+        await save()
+        check(requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').length===1 && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length===1 && await js(`[...document.querySelectorAll('form input:not([type=file]), form textarea')].every(field=>!field.validity.customError)`),'공통 검증 오류를 수정하면 선택 이미지와 내용을 한 번 저장')
+
+        const sectionSource='\r\n  *원문* _밑줄_ /기울임/ -가로줄-\r\n| 제목 | 값 |\r\n| 자료 | 보존 |\r\n  '
+        const secondSource=' \r\n둘째 /원문/\r\n '
+        site=initial();site.sections[0].content=sectionSource;site.sections[1].content=secondSource
+        site.keywords=[{id:30,sort_order:1,content:'기존 첫째'},{id:31,sort_order:2,content:'기존 둘째'}]
+        await navigate('/edit');await until(`document.querySelector('[data-section] textarea')?.value===${JSON.stringify(sectionSource.replace(/\r\n/g,'\n'))}`,'source editor loaded')
+        check(await js(`document.querySelector('[data-section] textarea').value.includes('*원문* _밑줄_ /기울임/ -가로줄-') && !document.querySelector('[data-section] textarea strong')`),'CRLF 저장 원문은 편집 화면에서 브라우저 기본 LF 원문으로 표시')
+        await set('#profileName','  공통 이름  ');await set('#profileMessage','  공통 상태  ');await set('[data-section] input','  공통 제목  ');await set('#keywords','  둘째 , , 첫째  , 둘째  ')
+        const sharedColors=[
+            {variable:'--main-color',column:'main_color',value:'#AbC'},
+            {variable:'--sub-color',column:'background_color',value:'#1234'},
+            {variable:'--background-color',column:'card_background_color',value:'#A1b2C3'},
+            {variable:'--typo-color',column:'typo_color',value:'#11223344'},
+        ]
+        for(const color of sharedColors)await set(`[data-theme="${color.variable}"]`,` ${color.value} `)
+        await focus('[data-section] .dragHandle');await key('Space',' ');await key('ArrowDown');await key('Space',' ');await pause(250)
+        await focus('#feedItems .feedDragHandle');await key('Space',' ');await key('ArrowDown');await key('Space',' ');await pause(250)
+        requests.length=0;await save()
+        const sharedPayload=requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').at(-1).body.p_data
+        check(sharedPayload.sections.map(row=>row.id).join(',')==='11,10' && sharedPayload.feed.map(row=>row.id).join(',')==='21,20' && sharedPayload.sections[0].content===secondSource && sharedPayload.sections[1].content===sectionSource && site.sections[1].content===sectionSource,'공통 변환 저장은 섹션·피드 순서와 ID·CRLF 원문을 보존')
+        check(sharedPayload.profile.name==='공통 이름' && sharedPayload.profile.status_message==='공통 상태' && sharedPayload.sections[1].title==='공통 제목' && sharedPayload.keywords.map(row=>row.content).join('|')==='둘째|첫째|둘째' && sharedPayload.keywords[0].id===30 && sharedPayload.keywords[1].id===31 && sharedPayload.keywords[2].id===null,'이름·상태·제목·키워드 공백 정리와 중복·순서·기존 ID 규칙 유지')
+        check(Object.keys(sharedPayload.theme).length===4 && sharedColors.every(({column,value})=>sharedPayload.theme[column]===value),'테마 4색의 CSS 변수·DB 컬럼 대응과 공백 정리 유지')
+        const savedKeywordIds=site.keywords.map(row=>row.id)
+        requests.length=0;await navigate('/edit');await until(`document.querySelector('#profileName')?.value==='공통 이름'`,'shared values reload')
+        check(loadRequests().length===1 && await js(`document.querySelector('#profileMessage').value==='공통 상태' && document.querySelector('#keywords').value==='둘째, 첫째, 둘째' && [...document.querySelectorAll('[data-section] input')].map(field=>field.value).join('|')==='둘째 섹션|공통 제목' && [...document.querySelectorAll('[data-section] textarea')].map(field=>field.value).join('|')===${JSON.stringify([secondSource,sectionSource].map(source=>source.replace(/\r\n/g,'\n')).join('|'))} && [...document.querySelectorAll('#feedItems .dragLabel')].map(field=>field.textContent).join('|')==='second.png|first.png' && ${JSON.stringify(sharedColors)}.every(({variable,value})=>document.querySelector('[data-theme="'+variable+'"]').value===value && getComputedStyle(document.documentElement).getPropertyValue(variable).trim()===value)`),'저장 후 재조회에서도 원문·목록 순서·정리된 키워드·4색 입력과 미리보기 유지')
+        await set('#profileMessage','재조회 상태');await save()
+        const reloadedPayload=requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').at(-1).body.p_data
+        check(reloadedPayload.sections.map(row=>row.id).join(',')==='11,10' && reloadedPayload.feed.map(row=>row.id).join(',')==='21,20' && reloadedPayload.keywords.map(row=>row.id).join(',')===savedKeywordIds.join(',') && reloadedPayload.sections[0].content===secondSource && reloadedPayload.sections[1].content===sectionSource,'재조회 후 다시 저장해도 기존 ID와 CRLF 원문 유지')
+        await navigate('/');await until(`document.querySelector('.profileName')?.textContent==='공통 이름'`,'shared values public reload')
+        check(await js(`document.title==='공통 이름' && document.querySelector('.profileMessage span').textContent==='재조회 상태' && [...document.querySelectorAll('.sectionText')].map(field=>field.textContent).join('|')==='둘째 섹션|공통 제목' && document.querySelector('.sectionContent strong')?.textContent==='원문' && document.querySelector('.sectionContent u')?.textContent==='밑줄' && [...document.querySelectorAll('.keywordList .keyword')].map(field=>field.textContent).join('|')==='#둘째|#첫째|#둘째' && ${JSON.stringify(sharedColors)}.every(({variable,value})=>getComputedStyle(document.documentElement).getPropertyValue(variable).trim()===value)`),'공통 변환으로 저장한 내용은 메인 재조회에서도 서식·키워드·테마로 표시')
     }
     check(errors.length===0,'브라우저 실행 예외 없음')
     console.log(JSON.stringify({phase,passed:passed.length,checks:passed,errors},null,2))

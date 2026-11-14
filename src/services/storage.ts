@@ -1,6 +1,8 @@
 import { supabase } from '../lib/supabase'
 import { validateImageUpload } from '../utils/uploadLimits'
 
+export { imageFileName } from '../utils/imageFileName'
+
 const imageBucket = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET?.trim() || 'site-images'
 
 type ImageFolder = 'profile' | 'feed'
@@ -34,16 +36,6 @@ function encodedFileName(name: string): string {
             ? character
             : `_${byte.toString(16).padStart(2, '0').toUpperCase()}`
     }).join('')
-}
-
-export function imageFileName(path: string): string {
-    const name = path.split('/').at(-1) || path
-    const encoded = name.match(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}--(.*)$/i)?.[1]
-    try {
-        return decodeURIComponent(encoded === undefined ? name : encoded.replace(/_([\da-f]{2})/gi, '%$1'))
-    } catch {
-        return encoded ?? name
-    }
 }
 
 export function validateImageFile(file: File, folder: ImageFolder): void {
