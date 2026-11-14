@@ -9,10 +9,12 @@ export interface ProfileDraft {
   name: string
   statusMessage: string
   file: File | null
+  imagePath: string | null
 }
 
 export interface SectionDraft {
   id: string
+  databaseId?: number
   title: string
   content: string
 }
@@ -21,6 +23,16 @@ export interface FeedDraft {
   id: string
   name: string
   file?: File
+  path?: string
+  databaseId?: number
+}
+
+export interface SiteEditDraft {
+  profile: ProfileDraft
+  theme: ThemeColors
+  sections: SectionDraft[]
+  keywords: string
+  feed: FeedDraft[]
 }
 
 export interface SiteProfile {
