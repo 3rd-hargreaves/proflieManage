@@ -52,7 +52,7 @@ export function useSiteEditor({ signingOut, authBlocked, canWrite, onLeaveGuardC
 
     const { state: query, reload: reloadQuery } = useSiteQuery({
         onLoad: acceptSite,
-        errorMessage: '수정할 정보를 불러오지 못했습니다.',
+        errorMessage: '로드 실패',
     })
 
     const canStart = useCallback(() => {
@@ -120,9 +120,9 @@ export function useSiteEditor({ signingOut, authBlocked, canWrite, onLeaveGuardC
         setCleaning(true)
         try {
             const complete = await retryImageCleanup()
-            if (mounted.current) setCleanupWarning(complete ? null : imageCleanupWarning('일부 이전 이미지 정리가 남아 있습니다. 다시 시도해 주세요.'))
+            if (mounted.current) setCleanupWarning(complete ? null : imageCleanupWarning('일부 이전 이미지 정리 존재. 재시도 요망.'))
         } catch {
-            if (mounted.current) setCleanupWarning('이미지 정리를 완료하지 못했습니다. 다시 시도해 주세요.')
+            if (mounted.current) setCleanupWarning('이미지 정리 완료 실패. 재시도 요망.')
         } finally {
             cleaningRef.current = false
             if (mounted.current) setCleaning(false)

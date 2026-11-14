@@ -52,13 +52,13 @@ describe('shared draft validation', () => {
         draft.keywords = ', ,'
 
         expect(validateSiteDraft(draft)).toEqual([
-            { field: 'theme', key: 'mainColor', message: '올바른 색상코드를 입력해 주세요.' },
-            { field: 'theme', key: 'backgroundColor', message: '헥스코드 항목을 입력해 주세요.' },
-            { field: 'profile.name', message: '이름 항목을 입력해 주세요.' },
-            { field: 'profile.statusMessage', message: '상태 메시지 항목을 입력해 주세요.' },
-            { field: 'section', index: 1, key: 'title', message: '섹션 제목 항목을 입력해 주세요.' },
-            { field: 'section', index: 1, key: 'content', message: '섹션 내용 항목을 입력해 주세요.' },
-            { field: 'keywords', message: '키워드를 하나 이상 입력해 주세요.' },
+            { field: 'theme', key: 'mainColor', message: '색상코드 형식 불일치' },
+            { field: 'theme', key: 'backgroundColor', message: '헥스코드 항목 입력 바람' },
+            { field: 'profile.name', message: '이름 항목 입력 바람' },
+            { field: 'profile.statusMessage', message: '상태 메시지 항목 입력 바람' },
+            { field: 'section', index: 1, key: 'title', message: '섹션 제목 항목 입력 바람' },
+            { field: 'section', index: 1, key: 'content', message: '섹션 내용 항목 입력 바람' },
+            { field: 'keywords', message: '키워드 한 개 이상 입력 필수' },
         ])
     })
 
@@ -71,7 +71,7 @@ describe('shared draft validation', () => {
     it('requires a stored path or a selected File for each feed entry', () => {
         const draft = toDraft(fixture())
         draft.feed[1].path = undefined
-        expect(validateSiteDraft(draft)).toContainEqual({ field: 'feed', index: 1, message: '피드 이미지를 선택해 주세요.' })
+        expect(validateSiteDraft(draft)).toContainEqual({ field: 'feed', index: 1, message: '피드 이미지 선택 필수' })
 
         draft.feed[1].file = new File(['image'], 'new.png', { type: 'image/png' })
         expect(validateSiteDraft(draft)).toEqual([])
@@ -83,11 +83,11 @@ describe('shared draft validation', () => {
         expect(validateSiteDraft(draft, 2)).toEqual([])
 
         draft.feed.push({ id: '51', name: 'existing.png', path: 'feed/51.png' })
-        expect(validateSiteDraft(draft, 2)).toContainEqual(expect.objectContaining({ field: 'feed', message: expect.stringContaining('최대 50장') }))
+        expect(validateSiteDraft(draft, 2)).toContainEqual(expect.objectContaining({ field: 'feed', message: expect.stringContaining('피드 이미지 수량 제한(50)') }))
         expect(validateSiteDraft(draft, 51)).toEqual([])
 
         draft.feed.push({ id: '52', name: 'existing.png', path: 'feed/52.png' })
-        expect(validateSiteDraft(draft, 51)).toContainEqual(expect.objectContaining({ field: 'feed', message: expect.stringContaining('최대 51장') }))
+        expect(validateSiteDraft(draft, 51)).toContainEqual(expect.objectContaining({ field: 'feed', message: expect.stringContaining('피드 이미지 수량 제한(51)') }))
     })
 })
 

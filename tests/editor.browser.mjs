@@ -167,7 +167,7 @@ try {
     check(preview.startsWith('blob:'),'선택한 이미지가 편집 상태에 존재')
     check(await js(`(()=>{const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()`),'미저장 내용은 beforeunload 경고 대상')
     await nativeClick('#profileName');const reloadDialogs=dialogs.length;await cdp('Page.reload');await pause(250);check(dialogs.slice(reloadDialogs).some(d=>d.type==='beforeunload') && await js(`document.querySelector('#profileName')?.value==='보존할 이름'`),'실제 새로고침 취소 시 편집 유지');
-    mode.userStatus=503;await refresh();await until('document.body.innerText.includes("확인하지 못")','verification network failure')
+    mode.userStatus=503;await refresh();await until('document.body.innerText.includes("로그인 상태 확인 실패")','verification network failure')
     check(await hasEditor() && await saveDisabled(),'인증 통신 오류에 편집기 유지·저장 잠금')
     check(await js(`document.querySelector('#profileName').value==='보존할 이름' && document.querySelector('[data-section] textarea').value==='보존할 *원문*'`),'인증 통신 오류에 텍스트 원문 유지')
     check(await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(preview)}`),'인증 통신 오류에 선택 File 유지')
@@ -244,9 +244,9 @@ try {
         const boundaryPreview=await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src`)
         check(boundaryPreview.startsWith('blob:') && await js(`document.querySelector('#profileFile').value==='' && document.querySelector('#profileFile').files.length===0 && document.querySelector('#profileFile').closest('.card').querySelector('.picTitle').textContent==='경계 이미지.png'`),'정확히 10MiB인 프로필 이미지 허용·파일 입력 초기화')
         await selectVirtualFile('#profileFile',{name:'크기 초과.png',type:'image/png',size:maxImageBytes+1})
-        check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('10MB를 초과') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)} && document.querySelector('#profileFile').value==='' && document.querySelector('#profileFile').files.length===0`),'10MiB 초과 프로필 즉시 거절·기존 선택 유지·입력 초기화')
+        check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('용량 제한 초과') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)} && document.querySelector('#profileFile').value==='' && document.querySelector('#profileFile').files.length===0`),'10MiB 초과 프로필 즉시 거절·기존 선택 유지·입력 초기화')
         await selectVirtualFile('#profileFile',{name:'빈 이미지.png',type:'image/png',size:0})
-        check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('비어 있습니다') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)}`),'빈 프로필 이미지 거절 후 기존 미리보기 유지')
+        check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('비어 있는 파일') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)}`),'빈 프로필 이미지 거절 후 기존 미리보기 유지')
         await selectVirtualFile('#profileFile',{name:'유형 오류.png',type:'text/html',size:image.length})
         check(await js(`document.querySelector('#profileFile').closest('.card').querySelector('[role=alert]')?.textContent.includes('지원하지 않는 형식') && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(boundaryPreview)} && document.querySelector('#profileName').value==='업로드 검증 초안' && document.querySelector('#profileFile').closest('.card').querySelector('.picTitle').textContent==='경계 이미지.png' && document.querySelector('#profileFile').files.length===0`) && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='POST')||r.path==='/rest/v1/rpc/save_site'),'MIME 오류 프로필 거절 후 초안·파일 제목 유지 및 저장 요청 없음')
         await save();const boundaryUpload=requests.find(r=>r.path.startsWith('/storage/')&&r.method==='POST')?.upload
@@ -261,13 +261,13 @@ try {
         check(site.feed.length===3 && feedUploads.length===1 && feedUploads[0].upload?.name==='선택 이미지.png' && feedUploads[0].upload?.hash===imageHash(image),'거절한 배치를 제외하고 기존 선택 피드 원본만 저장')
 
         await reset(true,49);await selectFile('#feedFiles')
-        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===50 && !document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')`),'저장된 49장에 한 장을 추가해 최대 50장 허용')
+        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===50 && !document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')`),'저장된 49장에 한 장을 추가해 피드 이미지 수량 제한(50) 허용')
         await selectFile('#feedFiles')
-        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===50 && document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')?.textContent.includes('최대 50장') && document.querySelector('#feedFiles').files.length===0`) && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='POST')||r.path==='/rest/v1/rpc/save_site'),'51번째 피드 즉시 거절·기존 50장과 입력 초기화 유지')
+        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===50 && document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')?.textContent.includes('피드 이미지 수량 제한(50)') && document.querySelector('#feedFiles').files.length===0`) && !requests.some(r=>(r.path.startsWith('/storage/')&&r.method==='POST')||r.path==='/rest/v1/rpc/save_site'),'51번째 피드 즉시 거절·기존 50장과 입력 초기화 유지')
         await save();check(site.feed.length===50 && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length===1,'허용된 50장 피드 순서·내용 저장')
 
         await reset(true,51);await set('#profileName','기존 51장 보존');await selectFile('#feedFiles')
-        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===51 && document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')?.textContent.includes('최대 51장') && document.querySelector('#feedFiles').files.length===0`),'기존 51장 피드는 보존하고 추가 증가는 거절')
+        check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===51 && document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')?.textContent.includes('피드 이미지 수량 제한(51)') && document.querySelector('#feedFiles').files.length===0`),'기존 51장 피드는 보존하고 추가 증가는 거절')
         await save();check(site.profile.name==='기존 51장 보존' && site.feed.length===51 && !requests.some(r=>r.path.startsWith('/storage/')&&r.method==='POST'),'기존 51장 피드가 있어도 다른 내용 수정 저장 가능')
         await nativeClick('#feedItems .picEditItem .btn');await selectFile('#feedFiles')
         check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===51 && !document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')`),'기존 제한 초과 피드는 삭제한 한 장의 교체 허용')
@@ -308,14 +308,14 @@ try {
 
         await reset();await selectFile('#profileFile')
         const invalidFields=[
-            {selector:'#profileName',value:' \t ',message:'이름 항목을 입력해 주세요.',label:'이름 공란'},
-            {selector:'#profileMessage',value:' \t ',message:'상태 메시지 항목을 입력해 주세요.',label:'상태 메시지 공란'},
-            {selector:'[data-section] input',index:1,value:'  ',message:'섹션 제목 항목을 입력해 주세요.',label:'둘째 섹션 제목 공란'},
-            {selector:'[data-section] textarea',index:1,value:'\n \t ',message:'섹션 내용 항목을 입력해 주세요.',label:'둘째 섹션 내용 공란'},
-            {selector:'[data-theme="--main-color"]',value:' \t ',message:'헥스코드 항목을 입력해 주세요.',label:'테마 색상 공란'},
-            {selector:'[data-theme="--sub-color"]',value:'#12',message:'올바른 색상코드를 입력해 주세요.',label:'잘못된 테마 색상'},
-            {selector:'#keywords',value:', ,',message:'키워드를 하나 이상 입력해 주세요.',label:'쉼표만 있는 키워드'},
-            {selector:'#keywords',value:' \t ',message:'키워드를 하나 이상 입력해 주세요.',label:'공백만 있는 키워드'},
+            {selector:'#profileName',value:' \t ',message:'이름 항목 입력 바람',label:'이름 공란'},
+            {selector:'#profileMessage',value:' \t ',message:'상태 메시지 항목 입력 바람',label:'상태 메시지 공란'},
+            {selector:'[data-section] input',index:1,value:'  ',message:'섹션 제목 항목 입력 바람',label:'둘째 섹션 제목 공란'},
+            {selector:'[data-section] textarea',index:1,value:'\n \t ',message:'섹션 내용 항목 입력 바람',label:'둘째 섹션 내용 공란'},
+            {selector:'[data-theme="--main-color"]',value:' \t ',message:'헥스코드 항목 입력 바람',label:'테마 색상 공란'},
+            {selector:'[data-theme="--sub-color"]',value:'#12',message:'색상코드 형식 불일치',label:'잘못된 테마 색상'},
+            {selector:'#keywords',value:', ,',message:'키워드 한 개 이상 입력 필수',label:'쉼표만 있는 키워드'},
+            {selector:'#keywords',value:' \t ',message:'키워드 한 개 이상 입력 필수',label:'공백만 있는 키워드'},
         ]
         for(const invalid of invalidFields){
             const index=invalid.index??0,field=`document.querySelectorAll(${JSON.stringify(invalid.selector)})[${index}]`
@@ -412,16 +412,16 @@ try {
         await reset(false);await until(`document.querySelector('.profileName')?.textContent==='검증 이름'`,'modal main ready')
         await js(`(()=>{const style=document.body.style;style.setProperty('overflow-y','auto','important');style.setProperty('padding-right','7px');window.scrollTo({top:250,behavior:'instant'});document.querySelector('.edit').focus({preventScroll:true});window.__modalScroll={x:scrollX,y:scrollY};window.__modalStyles=['position','top','left','width','overflow-x','overflow-y','padding-right'].map(property=>({property,value:style.getPropertyValue(property),priority:style.getPropertyPriority(property)}));window.__backgroundClicks=0;document.querySelector('.edit').addEventListener('click',()=>window.__backgroundClicks++)})()`)
         await clickWithoutScroll('.edit');await until(`document.querySelector('#loginModal')?.matches(':modal')`,'native login dialog')
-        check(await js(`document.querySelector('#loginModal').tagName==='DIALOG' && document.activeElement===document.querySelector('#loginModal input[type=password]') && !document.querySelector('#loginModal button[aria-label="로그인 창 닫기"]').matches(':disabled')`),'로그인 native dialog의 최초 포커스와 명시적 닫기 버튼 제공')
-        await focus('#loginModal button[aria-label="로그인 창 닫기"]');await key('Tab')
+        check(await js(`document.querySelector('#loginModal').tagName==='DIALOG' && document.activeElement===document.querySelector('#loginModal input[type=password]') && !document.querySelector('#loginModal button[type=submit]').matches(':disabled')`),'로그인 native dialog의 최초 포커스와 닫기 버튼 없이 로그인 제공')
+        await focus('#loginModal button[type=submit]');await key('Tab')
         const tabWrapped=await js(`document.activeElement===document.querySelector('#loginModal input[type=password]')`)
         await key('Tab','Tab',8)
-        check(tabWrapped && await js(`document.activeElement===document.querySelector('#loginModal button[aria-label="로그인 창 닫기"]')`),'로그인 Tab·Shift+Tab이 모달 안에서 양방향 순환')
+        check(tabWrapped && await js(`document.activeElement===document.querySelector('#loginModal button[type=submit]')`),'로그인 Tab·Shift+Tab이 모달 안에서 양방향 순환')
         await js(`document.querySelector('.edit').focus()`)
         const lockedScroll=await js('scrollY')
         await cdp('Input.dispatchMouseEvent',{type:'mouseWheel',x:5,y:5,deltaX:0,deltaY:250});await pause(100)
         check(await js(`document.querySelector('#loginModal').contains(document.activeElement) && document.activeElement!==document.querySelector('.edit') && document.body.style.position==='fixed' && scrollY===${JSON.stringify(lockedScroll)} && window.__modalScroll.y>0`),'로그인 중 실제 배경 포커스 이동과 휠 스크롤 차단')
-        await nativeClick('#loginModal button[aria-label="로그인 창 닫기"]');await until(`!document.querySelector('#loginModal')`,'login explicit close')
+        await clickWithoutScroll('.edit');await until(`!document.querySelector('#loginModal')`,'login explicit close')
         check(await js(`document.activeElement===document.querySelector('.edit') && Math.abs(scrollY-window.__modalScroll.y)<=1 && window.__modalStyles.every(({property,value,priority})=>document.body.style.getPropertyValue(property)===value && document.body.style.getPropertyPriority(property)===priority)`),'로그인 닫기 후 호출 버튼 포커스·스크롤 좌표·인라인 스타일 복원')
         await clickWithoutScroll('.edit');await until(`document.querySelector('#loginModal')?.matches(':modal')`,'login backdrop ready');await js('window.__backgroundClicks=0')
         await clickWithoutScroll('.edit');await until(`!document.querySelector('#loginModal')`,'native login backdrop close')
@@ -430,20 +430,20 @@ try {
         await reset(false);await nativeClick('.edit');await until(`document.querySelector('#loginModal')?.matches(':modal')`,'pending modal ready')
         mode.tokenStatus=400;mode.tokenDelay=1600;await set('#loginModal input','test-only-password');await nativeClick('#loginModal button[type=submit]')
         await until(`document.querySelector('#loginModal form')?.getAttribute('aria-busy')==='true'`,'pending login dialog')
-        await nativeClick('#loginModal button[aria-label="로그인 창 닫기"]');await key('Escape');await clickWithoutScroll('.edit');await key('Tab')
+        await nativeClick('#loginModal button[type=submit]');await key('Escape');await clickWithoutScroll('.edit');await key('Tab')
         await js(`document.querySelector('.edit').focus()`)
         check(await js(`document.querySelector('#loginModal')?.matches(':modal') && [...document.querySelectorAll('#loginModal input, #loginModal button')].every(field=>field.matches(':disabled')) && document.querySelector('#loginModal').contains(document.activeElement) && document.body.style.position==='fixed'`) && requests.filter(r=>r.path==='/auth/v1/token'&&r.method==='POST').length===1,'로그인 pending은 닫기·Escape·배경 클릭·포커스 이탈을 차단')
-        await until(`document.querySelector('#loginModal [role=alert]')?.textContent.includes('비밀번호') && !document.querySelector('#loginModal button[aria-label="로그인 창 닫기"]').matches(':disabled')`,'pending login failed')
-        await nativeClick('#loginModal button[aria-label="로그인 창 닫기"]');await until(`!document.querySelector('#loginModal')`,'pending login close after failure')
+        await until(`document.querySelector('#loginModal [role=alert]')?.textContent.includes('비밀번호') && !document.querySelector('#loginModal button[type=submit]').matches(':disabled')`,'pending login failed')
+        await clickWithoutScroll('.edit');await until(`!document.querySelector('#loginModal')`,'pending login close after failure')
         check(await js(`document.activeElement===document.querySelector('.edit') && document.body.style.position===''`),'로그인 실패 후 닫기 재활성화와 포커스·스크롤 잠금 복구')
 
         await reset(false);await until(`!!document.querySelector('#feedOpenBtn')`,'gallery main ready');await nativeClick('#feedOpenBtn')
         await js(`(()=>{const image=document.querySelector('.picList img');image.scrollIntoView({block:'center'});image.focus({preventScroll:true});window.__imageOpener=image;window.__imageScroll=scrollY;window.__backgroundClicks=0;document.querySelector('.edit').addEventListener('click',()=>window.__backgroundClicks++)})()`)
         await clickWithoutScroll('.picList img');await until(`document.querySelector('#imgModal')?.matches(':modal')`,'native image dialog')
         await key('Tab');await key('Tab','Tab',8);await js(`document.querySelector('.edit').focus()`)
-        check(await js(`document.querySelector('#imgModal').tagName==='DIALOG' && document.activeElement===document.querySelector('#imgModal button[aria-label="이미지 확대 창 닫기"]') && document.body.style.position==='fixed'`),'이미지 확대 native dialog는 닫기에 포커스를 두고 Tab·배경 포커스를 가둠')
-        await nativeClick('#imgModal button[aria-label="이미지 확대 창 닫기"]');await until(`!document.querySelector('#imgModal')`,'image explicit close')
-        check(await js(`document.activeElement===window.__imageOpener && Math.abs(scrollY-window.__imageScroll)<=1 && document.body.style.position===''`),'이미지 닫기 버튼은 원래 사진 포커스와 스크롤 복원')
+        check(await js(`document.querySelector('#imgModal').tagName==='DIALOG' && document.activeElement===document.querySelector('#imgModal') && document.body.style.position==='fixed'`),'이미지 확대 native dialog는 닫기에 포커스를 두고 Tab·배경 포커스를 가둠')
+        await clickWithoutScroll('.edit');await until(`!document.querySelector('#imgModal')`,'image explicit close')
+        check(await js(`document.activeElement===window.__imageOpener && Math.abs(scrollY-window.__imageScroll)<=1 && document.body.style.position===''`),'이미지 바깥 클릭은 원래 사진 포커스와 스크롤 복원')
         await key('Enter');await until(`document.querySelector('#imgModal')?.matches(':modal')`,'image keyboard open');await key('Escape');await until(`!document.querySelector('#imgModal')`,'image keyboard close')
         check(await js(`document.activeElement===window.__imageOpener && document.body.style.position===''`),'이미지 확대 Enter 열기·Escape 닫기와 포커스 복원')
         await clickWithoutScroll('.picList img');await until(`document.querySelector('#imgModal')?.matches(':modal')`,'image backdrop ready');await clickWithoutScroll('.edit');await until(`!document.querySelector('#imgModal')`,'image native backdrop close')

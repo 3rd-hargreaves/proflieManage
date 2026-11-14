@@ -10,7 +10,7 @@ export default function SiteImage({
     src,
     alt,
     className,
-    fallbackText = '이미지를 불러오지 못했습니다.',
+    fallbackText = '이미지 로드 실패',
     ...imageProps
 }: SiteImageProps) {
     const [failedSource, setFailedSource] = useState<string | null>(null)

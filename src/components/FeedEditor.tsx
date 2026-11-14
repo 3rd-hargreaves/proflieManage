@@ -79,7 +79,7 @@ export default function FeedEditor({ value, onChange, disabled, sorting, onSorti
                             setSelectedNames(files.map((file) => file.name).join(', '))
                             setImageError(null)
                         } catch (error) {
-                            setImageError(error instanceof Error ? error.message : '이미지 파일을 확인해 주세요.')
+                            setImageError(error instanceof Error ? error.message : '파일 확인 요망')
                         }
                     }}
                 />

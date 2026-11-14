@@ -46,7 +46,7 @@ export function validateImageFile(file: File, folder: ImageFolder): void {
     validateImageUpload(file)
     // Keys contain ASCII only, so string length equals the UTF-8 byte length.
     if (`${folder}/${'0'.repeat(36)}--${encodedFileName(file.name)}`.length > 1024) {
-        throw new Error('이미지 파일 이름이 너무 깁니다. 파일 이름을 줄인 뒤 다시 선택해 주세요.')
+        throw new Error('파일명 줄인 후 재시도 요망')
     }
 }
 
@@ -63,10 +63,10 @@ export function getPendingImageCleanupCount(): number {
     return pendingCleanup.paths().length
 }
 
-export function imageCleanupWarning(message = '이전 이미지 정리가 남아 있습니다. 다시 시도해 주세요.'): string | null {
+export function imageCleanupWarning(message = '이전 이미지 정리가 남아 있음. 재시도 요망.'): string | null {
     if (!getPendingImageCleanupCount()) return null
     return pendingCleanup.hasPersistenceError()
-        ? `${message} 정리 기록을 보관하지 못했습니다. 이 화면에서 정리 재시도를 완료해 주세요.`
+        ? `${message} 정리 기록 보관 실패. 이 화면에서 정리 재시도 완료 요망.`
         : message
 }
 
@@ -110,7 +110,7 @@ export async function retryImageCleanup(): Promise<boolean> {
 }
 
 export async function uploadImage(file: File, folder: ImageFolder): Promise<UploadedImage> {
-    if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
+    if (!supabase) throw new Error('사이트 연결 설정 확인 요망')
     validateImageFile(file, folder)
     const cached = uploadedFiles.get(file)?.[folder]
     if (cached?.reusable) return { path: cached.path, newlyUploaded: false }
@@ -126,7 +126,7 @@ export async function uploadImage(file: File, folder: ImageFolder): Promise<Uplo
     } catch (error) {
         // No RPC can reference this path yet, even if the upload response was lost.
         queueImageCleanup([path])
-        throw new Error(`이미지 “${file.name}”를 업로드하지 못했습니다. 연결과 이미지 업로드 권한을 확인하고 다시 시도해 주세요.`, { cause: error })
+        throw new Error(`이미지 “${file.name}” 업로드 실패. 연결 및 권한 확인 후 재시도 요망.`, { cause: error })
     }
 
     const entry = { path, reusable: true }

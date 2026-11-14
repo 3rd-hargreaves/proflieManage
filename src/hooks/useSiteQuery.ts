@@ -12,7 +12,7 @@ interface SiteQueryOptions {
     errorMessage?: string
 }
 
-export function useSiteQuery({ onLoad, errorMessage = '사이트 정보를 불러오지 못했습니다.' }: SiteQueryOptions = {}) {
+export function useSiteQuery({ onLoad, errorMessage = '로드 실패' }: SiteQueryOptions = {}) {
     const [state, setState] = useState<SiteQueryState>({ status: 'loading' })
     const [attempt, setAttempt] = useState(0)
     const activeRequest = useRef<AbortController | null>(null)

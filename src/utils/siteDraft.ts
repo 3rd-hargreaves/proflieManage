@@ -44,10 +44,10 @@ export function validateSiteDraft(draft: SiteEditDraft, savedFeedCount = 0): Dra
         if (contentMessage) issues.push({ field: 'section', index, key: 'content', message: contentMessage })
     })
     if (!parseKeywords(draft.keywords).length) {
-        issues.push({ field: 'keywords', message: '키워드를 하나 이상 입력해 주세요.' })
+        issues.push({ field: 'keywords', message: '키워드 한 개 이상 입력 필수' })
     }
     draft.feed.forEach((image, index) => {
-        if (!image.file && !image.path) issues.push({ field: 'feed', index, message: '피드 이미지를 선택해 주세요.' })
+        if (!image.file && !image.path) issues.push({ field: 'feed', index, message: '피드 이미지 선택 필수' })
     })
     try {
         validateFeedImageCount(draft.feed.length, feedImageLimit(savedFeedCount))
@@ -77,7 +77,7 @@ export function toDraft(site: SiteData): SiteEditDraft {
 }
 
 export function buildSaveData(draft: SiteEditDraft, expected: SiteData, images: SavedImagePaths): SiteSaveData {
-    if (images.feed.length !== draft.feed.length) throw new Error('피드 이미지 경로를 확인해 주세요.')
+    if (images.feed.length !== draft.feed.length) throw new Error('피드 이미지 경로 확인 요망')
     return {
         profile: {
             name: draft.profile.name.trim(),

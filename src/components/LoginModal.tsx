@@ -54,7 +54,7 @@ function OpenLoginModal({ onClose, onLoginSuccess }: Omit<LoginModalProps, 'isOp
             await onLoginSuccess()
         } catch (error) {
             if (isCurrent()) {
-                setError(error instanceof Error ? error.message : '로그인하지 못했습니다. 다시 시도해 주세요.')
+                setError(error instanceof Error ? error.message : '로그인 실패')
             }
         } finally {
             submitting.current = false
@@ -85,9 +85,7 @@ function OpenLoginModal({ onClose, onLoginSuccess }: Omit<LoginModalProps, 'isOp
                 <button type="submit" className="btn h30 border borderRad widthFull" disabled={pending || !!authConfigurationError}>
                     {pending ? '로그인 중…' : '로그인'}
                 </button>
-                <button type="button" className="btn h30 border borderRad widthFull" disabled={pending} onClick={close} aria-label="로그인 창 닫기">
-                    닫기
-                </button>
+
             </form>
         </Modal>
     )

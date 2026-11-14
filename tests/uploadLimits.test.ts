@@ -23,7 +23,7 @@ describe('image upload limits', () => {
     })
 
     it('rejects empty images before a request can be made', () => {
-        expect(() => validateImageUpload(image({ size: 0 }))).toThrow('비어 있습니다')
+        expect(() => validateImageUpload(image({ size: 0 }))).toThrow('비어 있는 파일')
     })
 
     it('accepts the exact byte limit and rejects the next byte', () => {
@@ -45,7 +45,7 @@ describe('feed image count limits', () => {
     })
 
     it('rejects adding beyond the total maximum', () => {
-        expect(() => validateFeedImageCount(MAX_FEED_IMAGES + 1)).toThrow('최대')
+        expect(() => validateFeedImageCount(MAX_FEED_IMAGES + 1)).toThrow('수량 제한')
     })
 
     it('grandfathers a larger saved feed without permitting further growth', () => {
@@ -54,7 +54,7 @@ describe('feed image count limits', () => {
         expect(limit).toBe(savedCount)
         expect(() => validateFeedImageCount(savedCount, limit)).not.toThrow()
         expect(() => validateFeedImageCount(savedCount - 1, limit)).not.toThrow()
-        expect(() => validateFeedImageCount(savedCount + 1, limit)).toThrow('최대')
+        expect(() => validateFeedImageCount(savedCount + 1, limit)).toThrow('수량 제한')
     })
 
     it('keeps the normal allowance when the saved count is smaller', () => {

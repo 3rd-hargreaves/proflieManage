@@ -218,7 +218,7 @@ describe('site save transaction boundary', () => {
         draft.feed.push({ id: 'new', name: '추가.png', file: png('추가.png') })
         api.upload.mockResolvedValueOnce({ error: null }).mockResolvedValueOnce({ error: { message: 'upload failure' } })
 
-        await expect(saveSite(draft, expected)).rejects.toThrow('업로드하지 못했습니다')
+        await expect(saveSite(draft, expected)).rejects.toThrow('업로드 실패')
         const firstProfilePath = api.upload.mock.calls[0][0]
         const failedFeedPath = api.upload.mock.calls[1][0]
         expect(api.rpc).not.toHaveBeenCalled()
@@ -242,7 +242,7 @@ describe('site save transaction boundary', () => {
         draft.feed.push({ id: 'next', name: '다음.png', file: png('다음.png') })
         api.upload.mockResolvedValueOnce({ error: { message: 'second upload failed' } })
 
-        await expect(saveSite(draft, expected)).rejects.toThrow('업로드하지 못했습니다')
+        await expect(saveSite(draft, expected)).rejects.toThrow('업로드 실패')
 
         expect(api.rpc).toHaveBeenCalledTimes(1)
         expect(api.remove.mock.calls.flatMap(call => call[0])).not.toContain(ambiguousPath)
@@ -313,7 +313,7 @@ describe('image upload limits at the save boundary', () => {
         const { expected } = fixture()
         draft.profile.file = png()
 
-        await expect(saveSite(draft, expected)).rejects.toThrow('최대 50장')
+        await expect(saveSite(draft, expected)).rejects.toThrow('피드 이미지 수량 제한(50)')
 
         expect(api.from).not.toHaveBeenCalled()
         expect(api.upload).not.toHaveBeenCalled()
@@ -322,8 +322,8 @@ describe('image upload limits at the save boundary', () => {
     })
 
     it.each([
-        { reason: 'oversized', makeFile: () => new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' }), message: '10MB를 초과' },
-        { reason: 'empty', makeFile: () => new File([], 'empty.png', { type: 'image/png' }), message: '비어 있습니다' },
+        { reason: 'oversized', makeFile: () => new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' }), message: '용량 제한 초과' },
+        { reason: 'empty', makeFile: () => new File([], 'empty.png', { type: 'image/png' }), message: '비어 있는 파일' },
         { reason: 'unsupported MIME', makeFile: () => new File(['document'], 'disguised.png', { type: 'application/pdf' }), message: '지원하지 않는 형식' },
     ])('checks a later $reason feed File before uploading any earlier valid File', async ({ makeFile, message }) => {
         const { saveSite } = await import('../src/services/save')
@@ -377,7 +377,7 @@ describe('image upload limits at the save boundary', () => {
         draft.profile.file = png()
         draft.feed.push({ id: 'extra', name: 'extra.png', file: png('extra.png') })
 
-        await expect(saveSite(draft, expected)).rejects.toThrow('최대 51장')
+        await expect(saveSite(draft, expected)).rejects.toThrow('피드 이미지 수량 제한(51)')
 
         expect(api.from).not.toHaveBeenCalled()
         expect(api.upload).not.toHaveBeenCalled()
@@ -592,7 +592,7 @@ describe('recovered cleanup reference protection', () => {
         storage.queueImageCleanup(['feed/memory-only.png'])
 
         expect(storage.getPendingImageCleanupCount()).toBe(1)
-        expect(storage.imageCleanupWarning()).toContain('정리 기록을 보관하지 못했습니다')
+        expect(storage.imageCleanupWarning()).toContain('정리 기록 보관 실패')
         expect(await storage.retryImageCleanup()).toBe(true)
         expect(api.remove).toHaveBeenCalledWith(['feed/memory-only.png'])
         expect(storage.imageCleanupWarning()).toBeNull()

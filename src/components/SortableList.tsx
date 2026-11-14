@@ -3,7 +3,7 @@ import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react'
 import {
     closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors,
 } from '@dnd-kit/core'
-import type { Announcements, CollisionDetection, DragEndEvent, Modifier } from '@dnd-kit/core'
+import type { CollisionDetection, DragEndEvent, Modifier } from '@dnd-kit/core'
 import {
     arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
@@ -78,7 +78,7 @@ function SortableItem({
                 disabled,
                 'aria-label': `${label} 순서 이동`,
                 'aria-roledescription': '순서 이동',
-                title: '드래그해 순서 변경 · 키보드는 Space 또는 Enter, 위아래 방향키, Esc로 취소',
+                title: '드래그해 순서 변경',
             })}
         </div>
     )
@@ -143,11 +143,7 @@ export default function SortableList<Item extends SortableEntry>({
         useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
         useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
     )
-    const itemLabel = (id: string | number) => {
-        const item = items.find(entry => entry.id === id)
-        return item ? getLabel(item) : label
-    }
-    const position = (id: string | number) => items.findIndex(item => item.id === id) + 1
+
 
     function isInside({ x, y }: { x: number, y: number }): boolean {
         const bounds = container.current?.getBoundingClientRect()
@@ -157,17 +153,6 @@ export default function SortableList<Item extends SortableEntry>({
     const collisionDetection: CollisionDetection = args => {
         if (args.pointerCoordinates && !isInside(args.pointerCoordinates)) return []
         return closestCenter(args)
-    }
-
-    const announcements: Announcements = {
-        onDragStart: ({ active }) => `${itemLabel(active.id)} 이동을 시작합니다. 전체 ${items.length}개 중 ${position(active.id)}번째입니다.`,
-        onDragOver: ({ active, over }) => over
-            ? `${itemLabel(active.id)}을 ${position(over.id)}번째 위치로 이동합니다.`
-            : '목록 밖입니다. 놓으면 이동을 취소합니다.',
-        onDragEnd: ({ active, over }) => over && allowedDrop.current
-            ? `${itemLabel(active.id)}을 ${position(over.id)}번째로 이동했습니다. 저장 버튼을 눌러 반영해 주세요.`
-            : '이동을 취소했습니다.',
-        onDragCancel: () => '이동을 취소했습니다.',
     }
 
     function finish({ active, over }: DragEndEvent) {
@@ -189,7 +174,7 @@ export default function SortableList<Item extends SortableEntry>({
             collisionDetection={collisionDetection}
             modifiers={[verticalAxis]}
             accessibility={{
-                announcements,
+                announcements: { onDragStart: () => undefined, onDragMove: () => undefined, onDragOver: () => undefined, onDragEnd: () => undefined, onDragCancel: () => undefined },
                 screenReaderInstructions: {
                     draggable: 'Space 또는 Enter 키로 이동을 시작하고 위아래 방향키로 순서를 바꿉니다. Space 또는 Enter 키로 놓고 Esc 키로 취소합니다. 바뀐 순서는 저장 버튼을 눌러 반영해 주세요.',
                 },

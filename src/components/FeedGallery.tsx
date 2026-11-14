@@ -45,7 +45,7 @@ export default function FeedGallery({ images, onOpenImage }: FeedGalleryProps) {
                         }}
                     />
                 ))}
-                {images.length === 0 && <p className="card pdLg text3 feedEmpty">등록된 피드 이미지가 없습니다.</p>}
+                {images.length === 0 && <p className="card pdLg text3 feedEmpty">등록된 이미지가 없습니다.</p>}
             </div>
             <button
                 id="feedBtn"

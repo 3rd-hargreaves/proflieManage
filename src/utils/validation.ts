@@ -5,11 +5,11 @@ export function isHexColor(value: string): boolean {
 }
 
 export function requiredMessage(value: string, label: string): string {
-    return value.trim() ? '' : `${label} 항목을 입력해 주세요.`
+    return value.trim() ? '' : `${label} 항목 입력 바람`
 }
 
 export function hexColorMessage(value: string): string {
-    return requiredMessage(value, '헥스코드') || (isHexColor(value) ? '' : '올바른 색상코드를 입력해 주세요.')
+    return requiredMessage(value, '헥스코드') || (isHexColor(value) ? '' : '색상코드 형식 불일치')
 }
 
 export function validateRequired(field: HTMLInputElement | HTMLTextAreaElement): boolean {

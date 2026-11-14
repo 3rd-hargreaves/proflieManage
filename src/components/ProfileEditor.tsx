@@ -51,7 +51,7 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
                             onChange({ ...value, file })
                             setImageError(null)
                         } catch (error) {
-                            setImageError(error instanceof Error ? error.message : '이미지 파일을 확인해 주세요.')
+                            setImageError(error instanceof Error ? error.message : '파일 확인 요망')
                         }
                     }}
                 />
