@@ -20,6 +20,7 @@
 - 같은 브랜치에서 섹션·피드의 공유 드래그 잠금과 로그인 모달의 비밀번호 초기화·요청 중 닫힘 차단을 연결했다. 개선 단계별로 커밋을 나누며 PR은 전체 개선 완료 후 진행한다.
 - 저장·업로드·정리 실패와 재시도를 회귀 검사로 추가하고 GitHub Actions에 린트·단위 검사·빌드·브라우저 검사를 구성했다.
 - 새 이미지의 형식·용량과 피드 총 개수를 선택·저장 전에 검사한다. 실제 Storage 버킷과 저장 함수에도 제한을 적용했다.
+- 메인·수정 화면은 공개 읽기 전용 `load_site` RPC로 프로필·테마·전체 목록을 한 시점의 스냅샷으로 읽는다.
 
 이식 후 빌드·린트와 브라우저 동작 검증 67개를 통과했다. 390·768·1280px 화면과 긴 파일명 표시도 확인했다.
 
@@ -71,6 +72,14 @@ URL과 공개 키는 프로젝트의 Connect 창에서도 함께 확인할 수 �
 
 수정 화면에서 이미지와 목록을 등록하면 저장한 내용과 순서가 메인 화면에 표시된다.
 
+## 공개 콘텐츠 조회
+
+`supabase/schema.sql`을 적용한 뒤 `supabase/read.sql`을 실행한다. 메인과 수정 화면의 `loadSite`는 `load_site()` RPC를 한 번 호출한다. 목록은 `sort_order`, `id` 순으로 반환하며, 여러 테이블 요청이나 페이지 사이에 다른 창의 저장 결과가 섞이지 않는다. 응답 전체를 확인하고 취소된 요청의 결과는 버린다.
+
+함수는 하나의 SQL SELECT로 구성한 `STABLE`, `SECURITY INVOKER` 함수이며 `search_path`를 비웠다. `anon`, `authenticated`에 실행을 허용하고 기존 테이블 SELECT 권한과 RLS를 따른다. PostgreSQL의 `STABLE` 함수는 호출 쿼리의 스냅샷을 사용한다. [공식 스냅샷 설명](https://www.postgresql.org/docs/current/xfunc-volatility.html)
+
+저장 시 사용하는 `private.site_snapshot()`의 `VOLATILE` 설정과 기존 `save_site` 충돌 검사는 유지한다. 다른 창의 최신 저장 내용은 새로 조회할 때 반영된다.
+
 ## 이미지 업로드 제한
 
 - 새 파일은 JPG·JPEG·PNG만 받으며 파일당 최대 10MB(10MiB, 10,485,760바이트)다. 빈 파일은 거절한다.
@@ -84,7 +93,7 @@ URL과 공개 키는 프로젝트의 Connect 창에서도 함께 확인할 수 �
 
 ## 수정 내용 저장
 
-새 프로젝트에서는 `supabase/schema.sql`을 실행한 뒤 `supabase/save.sql`을 실행한다. 저장 SQL에는 관리자 전용 `save_site` 함수와 `site-images` 버킷의 `profile/`, `feed/` 접근 정책이 포함된다. 다른 버킷을 사용하면 환경변수와 Storage 정책의 버킷 이름을 함께 변경한다.
+새 프로젝트에서는 `supabase/schema.sql`을 실행한 뒤 `supabase/read.sql`, `supabase/save.sql`을 실행한다. 저장 SQL에는 관리자 전용 `save_site` 함수와 `site-images` 버킷의 `profile/`, `feed/` 접근 정책이 포함된다. 다른 버킷을 사용하면 환경변수와 Storage 정책의 버킷 이름을 함께 변경한다.
 
 섹션 위의 `↕ 순서 이동` 손잡이나 피드 파일 제목 부분을 드래그해 순서를 바꾼다. 터치로도 옮길 수 있으며, 손잡이에 키보드 초점을 둔 뒤 Space 또는 Enter로 잡고 위아래 방향키로 이동한 후 다시 Space 또는 Enter로 놓을 수 있다. Esc 키 또는 목록 밖에 놓기로 이동을 취소한다. 정렬 후 저장 버튼을 누르면 DB의 `sort_order`에 반영된다. 순서만 바꿀 때에는 이미지를 다시 업로드하지 않는다.
 
@@ -133,15 +142,17 @@ npm test
 npm run test:editor:browser
 ```
 
-Node.js 22.12 이상을 사용한다. `npm test`는 서식 파서 28개, 편집 변경 감지·목록 잠금 10개, 저장 서비스 24개와 업로드 제한 12개의 검사를 실행한다. 각각 `test:format`, `test:editor`, `test:services`로 따로 실행할 수도 있다.
+Node.js 22.12 이상을 사용한다. `npm test`는 서식 파서 28개, 편집 변경 감지·목록 잠금 10개, 저장 서비스 24개, 업로드 제한 12개, 조회 서비스 13개의 검사를 실행한다. 각각 `test:format`, `test:editor`, `test:services`로 따로 실행할 수도 있다.
 
 `npm run test:services`는 Supabase 경계만 모킹하고 실제 저장·Storage 코드를 실행한다. 업로드→DB 저장→기존 이미지 정리 순서, 정렬만 저장, 부분 업로드 실패, 응답 유실 후 업로드 경로 재사용, 충돌 시 편집 내용 보존, 정리 실패와 재시도를 검사한다. Vitest는 실제 `.env` 파일을 읽지 않는다.
 
-`npm run test:editor:browser`는 테스트 서버와 실제 SDK를 사용하는 브라우저 회귀 검사 61개를 실행하며 실제 Supabase 프로젝트나 비밀번호는 사용하지 않는다. 용량 경계·잘못된 파일 선택·피드 개수 제한과 원본 바이트 보존도 검사한다. 1단계만 검사하려면 `node tests/editor.browser.mjs --phase1`을 실행한다. Chrome/Chromium이 필요하며 Windows·macOS·Linux의 기본 설치 경로를 찾는다. 다른 경로는 `CHROME_PATH` 환경변수로 지정한다. 전체 실행은 3분 안에 종료하며 테스트 서버·브라우저·임시 파일을 정리한다.
+`npm run test:editor:browser`는 테스트 서버와 실제 SDK를 사용하는 브라우저 회귀 검사 71개를 실행하며 실제 Supabase 프로젝트나 비밀번호는 사용하지 않는다. 단일 조회·오류 후 재시도·지연 응답 취소, 용량 경계·잘못된 파일 선택·피드 개수 제한과 원본 바이트 보존도 검사한다. 1단계만 검사하려면 `node tests/editor.browser.mjs --phase1`을 실행한다. Chrome/Chromium이 필요하며 Windows·macOS·Linux의 기본 설치 경로를 찾는다. 다른 경로는 `CHROME_PATH` 환경변수로 지정한다. 전체 실행은 3분 안에 종료하며 테스트 서버·브라우저·임시 파일을 정리한다.
 
 `.github/workflows/ci.yml`은 각 브랜치의 push와 `main` 대상 PR, 수동 실행에서 `npm ci`, 린트, 단위 검사, 빌드, 브라우저 검사를 실행한다. Ubuntu와 Node.js 22를 사용하며 별도의 Supabase 환경변수나 GitHub Secrets는 필요하지 않다. 원격 CI 결과는 커밋을 푸시한 뒤 확인한다.
 
 DB 회귀 검사는 `supabase/save.test.sql`을 프로젝트 소유자 권한으로 실행한다. 모든 콘텐츠 변경은 마지막에 롤백하며, 자동증가 ID 번호에는 간격이 생길 수 있다. 관리자 전용 실행 권한, 원자적 저장, 재시도와 충돌, Storage 정책·버킷 제한, 피드 50장 경계와 기존 초과 목록의 보존·교체·감축을 검사한다.
+
+조회 DB 검사는 `supabase/read.test.sql`을 같은 권한으로 실행한다. 익명·비관리자 읽기 전용 호출, 함수 권한·RLS, 정렬·ID·원문 보존, 빈 목록과 1,005개 섹션 반환을 검사하고 롤백한다. 실제 DB 동시 커밋 부하 검사는 별도로 수행하지 않았다.
 
 ## 원격 저장소
 

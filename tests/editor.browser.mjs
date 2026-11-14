@@ -31,6 +31,13 @@ const jwt = n => `${Buffer.from('{"alg":"HS256","typ":"JWT"}').toString('base64u
 let tokenSequence = 0
 const session = () => ({ access_token: jwt(++tokenSequence), refresh_token: 'test-refresh-token', token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now()/1000)+3600, user })
 const initial = () => ({ profile: { id: 1, name: '검증 이름', status_message: '검증 상태', profile_image_path: null }, theme: { id: 1, main_color: '#7841ab', background_color: '#fce8ef', card_background_color: '#ffffff', typo_color: '#26232a' }, sections: [{ id: 10, sort_order: 1, title: '첫 섹션', content: '첫 내용' },{ id: 11, sort_order: 2, title: '둘째 섹션', content: '둘째 내용' }], keywords: [{ id: 30, sort_order: 1, content: '검증' }], feed: [{id:20,sort_order:1,image_path:'feed/first.png'},{id:21,sort_order:2,image_path:'feed/second.png'}] })
+const snapshot = tag => ({
+    profile: { id: 1, name: `${tag} 이름`, status_message: `${tag} 상태`, profile_image_path: null },
+    theme: { id: 1, main_color: { snapshot: '#2468ac', stale: '#ac6824', current: '#13579b', fresh: '#97531b' }[tag], background_color: '#cdefff', card_background_color: '#fffaf0', typo_color: '#123456' },
+    sections: [{ id: 11, sort_order: 1, title: `${tag} 둘째`, content: `${tag} 둘째 내용` }, { id: 10, sort_order: 2, title: `${tag} 첫째`, content: `${tag} 첫째 내용` }],
+    keywords: [{ id: 32, sort_order: 1, content: `${tag}-second` }, { id: 31, sort_order: 2, content: `${tag}-first` }],
+    feed: [{ id: 21, sort_order: 1, image_path: `feed/${tag}-second.png` }, { id: 20, sort_order: 2, image_path: `feed/${tag}-first.png` }],
+})
 let site = initial()
 let mode = { userStatus: 200, userDelay: 0, tokenDelay: 0, saveDelay: 0 }
 const requests = []
@@ -53,6 +60,14 @@ const api = http.createServer(async (req,res) => {
     if(url.pathname==='/auth/v1/user') {const status=mode.userStatus;await pause(mode.userDelay);send(status,status===200?user:{code:status===401?'bad_jwt':'unexpected_failure',msg:'Mock verification failure'});return}
     if(url.pathname==='/auth/v1/token'){await pause(mode.tokenDelay);const status=mode.tokenStatus??200;send(status,status===200?session():{error:'invalid_grant',error_code:'invalid_credentials',msg:'Invalid login credentials'});return}
     if(url.pathname==='/auth/v1/logout'){send(204);return}
+    if(url.pathname==='/rest/v1/rpc/load_site' && req.method==='POST') {
+        const data=structuredClone(site),status=mode.loadStatus??200,delay=mode.loadDelay??0
+        entry.snapshotName=data.profile.name
+        res.once('close',()=>{if(!res.writableEnded)entry.cancelled=true})
+        await pause(delay)
+        if(!res.destroyed)send(status,status===200?data:{code:'unexpected_failure',message:'Mock snapshot failure'})
+        return
+    }
     if(url.pathname==='/rest/v1/rpc/save_site') {
         await pause(mode.saveDelay)
         if(mode.saveFailure){send(400,{code:'P0001',message:mode.saveFailure});return}
@@ -138,6 +153,8 @@ try {
     const save=async()=>{await js('document.querySelector("button[type=submit]").click()');await until('/저장했습니다|저장 성공/.test(document.body.innerText) && !document.querySelector("button[type=submit]").matches(":disabled")','save complete')}
     const selectFile=async(selector,files=[picture])=>{const {root}=await cdp('DOM.getDocument');const {nodeId}=await cdp('DOM.querySelector',{nodeId:root.nodeId,selector});await cdp('DOM.setFileInputFiles',{nodeId,files});await pause(100)}
     const selectVirtualFile=async(selector,file)=>{await js(`(()=>{const input=document.querySelector(${JSON.stringify(selector)}),file=${JSON.stringify(file)},transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(file.size)],file.name,{type:file.type}));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}))})()`);await pause(100)}
+    const loadRequests=()=>requests.filter(r=>r.path==='/rest/v1/rpc/load_site'&&r.method==='POST')
+    const directTableRequests=()=>requests.filter(r=>/^\/rest\/v1\/(profile|theme|sections|keywords|feed_images)$/.test(r.path))
     await navigate('/');await reset()
     check(await hasEditor(),'검증된 관리자만 수정 화면 열기')
     check(await js(`(()=>{const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return !e.defaultPrevented})()`),'변경 전에는 이탈 경고 없음')
@@ -251,6 +268,39 @@ try {
         await nativeClick('#feedItems .picEditItem .btn');await selectFile('#feedFiles')
         check(await js(`document.querySelectorAll('#feedItems .picEditItem').length===51 && !document.querySelector('#feedFiles').closest('.card').querySelector('[role=alert]')`),'기존 제한 초과 피드는 삭제한 한 장의 교체 허용')
         await save();check(site.feed.length===51 && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length===1,'기존 제한 초과 피드 교체도 원래 개수로 저장')
+
+        site=snapshot('snapshot');requests.length=0;await navigate('/')
+        await until(`document.querySelector('.profileName')?.textContent==='snapshot 이름'`,'single snapshot main')
+        check(loadRequests().length===1 && loadRequests().every(r=>Object.keys(r.body??{}).length===0) && directTableRequests().length===0,'메인 조회는 인자 없는 load_site RPC 한 번만 사용')
+        check(await js(`document.title==='snapshot 이름' && document.querySelector('.profileMessage span').textContent==='snapshot 상태' && [...document.querySelectorAll('.sectionText')].map(e=>e.textContent).join('|')==='snapshot 둘째|snapshot 첫째' && [...document.querySelectorAll('.sectionContent')].map(e=>e.textContent).join('|')==='snapshot 둘째 내용|snapshot 첫째 내용' && [...document.querySelectorAll('.keywordList .keyword')].map(e=>e.textContent).join('|')==='#snapshot-second|#snapshot-first' && [...document.querySelectorAll('.picList img')].map(e=>new URL(e.src).pathname.split('/').at(-1)).join('|')==='snapshot-second.png|snapshot-first.png' && getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()==='#2468ac'`),'메인 프로필·테마·섹션·키워드·피드가 같은 스냅샷 순서로 표시')
+        requests.length=0;await nativeClick('.edit');await until(`document.querySelector('#profileName')?.value==='snapshot 이름'`,'single snapshot editor')
+        check(loadRequests().length===1 && directTableRequests().length===0,'수정 화면 진입도 load_site RPC 한 번만 사용')
+        check(await js(`document.querySelector('#profileMessage').value==='snapshot 상태' && [...document.querySelectorAll('[data-section] input')].map(e=>e.value).join('|')==='snapshot 둘째|snapshot 첫째' && [...document.querySelectorAll('[data-section] textarea')].map(e=>e.value).join('|')==='snapshot 둘째 내용|snapshot 첫째 내용' && document.querySelector('#keywords').value==='snapshot-second, snapshot-first' && [...document.querySelectorAll('#feedItems .dragLabel')].map(e=>e.textContent).join('|')==='snapshot-second.png|snapshot-first.png' && getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()==='#2468ac'`),'수정 원문·키워드·피드 순서도 단일 스냅샷과 일치')
+
+        mode.loadStatus=503;requests.length=0;await navigate('/')
+        await until(`document.querySelector('main [role=alert]')?.textContent.includes('불러오지 못')`,'main snapshot error')
+        check(loadRequests().length===1 && directTableRequests().length===0 && !await hasEditor(),'메인 스냅샷 조회 실패 시 오류 표시·직접 테이블 재조회 없음')
+        mode.loadStatus=200;await button('^다시 시도$');await until(`document.querySelector('.profileName')?.textContent==='snapshot 이름'`,'main snapshot retry')
+        check(loadRequests().length===2 && directTableRequests().length===0,'메인 다시 시도는 RPC 한 번 추가 후 정상 복구')
+        mode.loadStatus=503;requests.length=0;await nativeClick('.edit')
+        await until(`document.querySelector('main [role=alert]')?.textContent.includes('불러오지 못')`,'editor snapshot error')
+        check(loadRequests().length===1 && !await hasEditor() && directTableRequests().length===0,'수정 스냅샷 조회 실패 시 빈 편집 폼 대신 오류 표시')
+        mode.loadStatus=200;await button('^다시 시도$');await until(`document.querySelector('#profileName')?.value==='snapshot 이름'`,'editor snapshot retry')
+        check(loadRequests().length===2 && directTableRequests().length===0,'수정 화면 다시 시도도 RPC 한 번 추가 후 정상 복구')
+
+        site=snapshot('stale');mode.loadDelay=1600;requests.length=0;await navigate('/')
+        await until(`document.querySelector('.edit')?.getAttribute('aria-label')==='수정 화면 열기'`,'delayed main verified')
+        const delayedMain=loadRequests()[0]
+        site=snapshot('current');mode.loadDelay=0;await nativeClick('.edit');await until(`document.querySelector('#profileName')?.value==='current 이름'`,'new editor snapshot')
+        await pause(1800)
+        check(delayedMain?.snapshotName==='stale 이름' && delayedMain.cancelled && loadRequests().length===2 && directTableRequests().length===0 && await js(`document.querySelector('#profileName')?.value==='current 이름' && document.querySelector('[data-section] textarea').value==='current 둘째 내용' && document.title==='관리자' && getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()==='#13579b'`),'이탈한 메인의 지연 스냅샷 취소·최신 수정 화면 오염 방지')
+        await js('history.back()');await until(`document.querySelector('.profileName')?.textContent==='current 이름'`,'return to current main')
+        site=snapshot('stale');mode.loadDelay=1600;requests.length=0;await nativeClick('.edit')
+        await until(`document.querySelector('main [role=status]')?.textContent.includes('수정할 정보를 불러오는 중')`,'delayed editor loading');await pause(100)
+        const delayedEditor=loadRequests()[0]
+        site=snapshot('fresh');mode.loadDelay=0;await js('history.back()');await until(`document.querySelector('.profileName')?.textContent==='fresh 이름'`,'fresh main snapshot')
+        await pause(1800)
+        check(delayedEditor?.snapshotName==='stale 이름' && delayedEditor.cancelled && loadRequests().length===2 && directTableRequests().length===0 && await js(`!document.querySelector('#profileName') && document.title==='fresh 이름' && document.querySelector('.sectionText').textContent==='fresh 둘째' && getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()==='#97531b'`),'이탈한 수정 화면의 지연 스냅샷 취소·최신 메인 화면 오염 방지')
     }
     check(errors.length===0,'브라우저 실행 예외 없음')
     console.log(JSON.stringify({phase,passed:passed.length,checks:passed,errors},null,2))
