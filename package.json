@@ -4,12 +4,14 @@
     "version": "0.0.0",
     "type": "module",
     "scripts": {
+        "test": "npm run test:format && npm run test:editor && npm run test:services",
         "dev": "vite",
         "build": "tsc -b && vite build",
         "lint": "oxlint",
         "test:format": "node --experimental-strip-types --test tests/sectionFormat.test.ts",
         "test:editor": "node --experimental-strip-types --test tests/editorDirty.test.ts tests/sortLock.test.ts",
         "test:editor:browser": "node tests/editor.browser.mjs",
+        "test:services": "vitest run",
         "preview": "vite preview"
     },
     "dependencies": {
@@ -27,6 +29,7 @@
         "@vitejs/plugin-react": "^6.1.2",
         "oxlint": "^1.90.0",
         "typescript": "~7.0.2",
-        "vite": "^8.3.6"
+        "vite": "^8.3.6",
+        "vitest": "5.1.0"
     }
 }

@@ -1,0 +1,293 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { SiteData, SiteEditDraft } from '../src/types/site'
+
+const api = vi.hoisted(() => ({
+    rpc: vi.fn(),
+    upload: vi.fn(),
+    remove: vi.fn(),
+    from: vi.fn(),
+}))
+
+vi.mock('../src/lib/supabase', () => ({
+    supabase: { rpc: api.rpc, storage: { from: api.from } },
+}))
+
+type SavePayload = {
+    p_expected: SiteData
+    p_data: {
+        profile: Omit<SiteData['profile'], 'id'>
+        theme: Omit<SiteData['theme'], 'id'>
+        sections: { id: number | null, title: string, content: string }[]
+        keywords: { id: number | null, content: string }[]
+        feed: { id: number | null, image_path: string }[]
+    }
+}
+
+function fixture(): { expected: SiteData, draft: SiteEditDraft } {
+    return {
+        expected: {
+            profile: { id: 1, name: '이름', status_message: '상태', profile_image_path: 'profile/old.png' },
+            theme: { id: 1, main_color: '#123', background_color: '#fff', card_background_color: '#fff', typo_color: '#222' },
+            sections: [{ id: 10, sort_order: 1, title: 'A', content: '*원문*' }, { id: 11, sort_order: 2, title: 'B', content: '두 번째' }],
+            keywords: [{ id: 30, sort_order: 1, content: '키워드' }],
+            feed: [{ id: 20, sort_order: 1, image_path: 'feed/first.png' }, { id: 21, sort_order: 2, image_path: 'feed/second.png' }],
+        },
+        draft: {
+            profile: { name: '이름', statusMessage: '상태', imagePath: 'profile/old.png', file: null },
+            theme: { mainColor: '#123', backgroundColor: '#fff', cardBackgroundColor: '#fff', typoColor: '#222' },
+            sections: [{ id: 'section-a', databaseId: 10, title: 'A', content: '*원문*' }, { id: 'section-b', databaseId: 11, title: 'B', content: '두 번째' }],
+            keywords: '키워드',
+            feed: [{ id: 'feed-a', databaseId: 20, name: 'first.png', path: 'feed/first.png' }, { id: 'feed-b', databaseId: 21, name: 'second.png', path: 'feed/second.png' }],
+        },
+    }
+}
+
+function png(name = '새 이미지.png'): File {
+    const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64')
+    return new File([bytes], name, { type: 'image/png' })
+}
+
+// The server result is a test fixture. SQL atomicity/idempotency is covered by
+// supabase/save.test.sql; these tests verify the client sends/reuses the request.
+function serverResult(payload: SavePayload): SiteData {
+    const data = payload.p_data
+    let nextId = 100
+    return {
+        profile: { id: 1, ...data.profile },
+        theme: { id: 1, ...data.theme },
+        sections: data.sections.map((row, index) => ({ ...row, id: row.id ?? nextId++, sort_order: index + 1 })),
+        keywords: data.keywords.map((row, index) => ({ ...row, id: row.id ?? nextId++, sort_order: index + 1 })),
+        feed: data.feed.map((row, index) => ({ ...row, id: row.id ?? nextId++, sort_order: index + 1 })),
+    }
+}
+
+beforeEach(() => {
+    vi.resetModules()
+    for (const mock of Object.values(api)) mock.mockReset()
+    vi.stubEnv('VITE_SUPABASE_STORAGE_BUCKET', 'site-images')
+    api.from.mockReturnValue({ upload: api.upload, remove: api.remove })
+    api.upload.mockResolvedValue({ data: {}, error: null })
+    api.remove.mockResolvedValue({ data: [], error: null })
+    api.rpc.mockImplementation(async (_name: string, payload: SavePayload) => ({ data: serverResult(payload), error: null }))
+})
+afterEach(() => vi.unstubAllEnvs())
+
+describe('site save transaction boundary', () => {
+    it('uploads new images before RPC and deletes only replaced paths after success', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        const events: string[] = []
+        draft.profile.file = png('프로필.png')
+        const feedFile = png('새 피드.png')
+        draft.feed = [draft.feed[1], { id: 'new-feed', name: feedFile.name, file: feedFile }]
+        api.upload.mockImplementation(async (path: string) => { events.push(`upload:${path}`); return { error: null } })
+        api.rpc.mockImplementation(async (_name: string, payload: SavePayload) => {
+            events.push('rpc')
+            return { data: serverResult(payload), error: null }
+        })
+        api.remove.mockImplementation(async () => { events.push('delete'); return { error: null } })
+
+        const result = await saveSite(draft, expected)
+
+        expect(events.map(event => event.split(':')[0])).toEqual(['upload', 'upload', 'rpc', 'delete'])
+        expect(api.rpc).toHaveBeenCalledWith('save_site', expect.objectContaining({ p_expected: expected }))
+        expect(api.remove).toHaveBeenCalledTimes(1)
+        expect(api.remove).toHaveBeenCalledWith(['feed/first.png', 'profile/old.png'])
+        expect(result.site.feed[0]).toMatchObject({ id: 21, image_path: 'feed/second.png' })
+        expect(result.site.feed[1].image_path).toBe(api.upload.mock.calls[1][0])
+        expect(result.cleanupWarning).toBeNull()
+    })
+
+    it('saves text and reordered IDs without uploading or deleting unchanged images', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.name = '수정 이름'
+        draft.sections.reverse()
+        draft.feed.reverse()
+        const originalDraft = structuredClone(draft)
+        const originalExpected = structuredClone(expected)
+
+        await saveSite(draft, expected)
+
+        const payload = api.rpc.mock.calls[0][1] as SavePayload
+        expect(payload.p_data.sections.map(row => row.id)).toEqual([11, 10])
+        expect(payload.p_data.feed.map(row => row.id)).toEqual([21, 20])
+        expect(api.upload).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+        expect(draft).toEqual(originalDraft)
+        expect(expected).toEqual(originalExpected)
+    })
+
+    it('keeps section markup, indentation and line endings in the RPC source', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        const content = '  *원문*\r\n| 가 | 나 |\r\n\n'
+        draft.sections[0].content = content
+        await saveSite(draft, expected)
+        expect(api.rpc.mock.calls[0][1].p_data.sections[0].content).toBe(content)
+    })
+
+    it('recovers a lost committed response using the same image paths and server IDs', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png()
+        let committed: SiteData
+        let sent: SavePayload
+        api.rpc.mockImplementationOnce(async (_name: string, payload: SavePayload) => {
+            sent = structuredClone(payload)
+            committed = serverResult(payload)
+            throw new TypeError('Response connection lost after commit')
+        }).mockImplementationOnce(async (_name: string, payload: SavePayload) => {
+            expect(payload).toEqual(sent)
+            return { data: committed, error: null }
+        })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('저장 결과를 확인하지 못했습니다')
+        expect(api.remove).not.toHaveBeenCalled()
+        const recovered = await saveSite(draft, expected)
+
+        expect(api.upload).toHaveBeenCalledTimes(1)
+        expect(recovered.site).toEqual(committed!)
+        expect(api.remove).toHaveBeenCalledTimes(1)
+        expect(api.remove).toHaveBeenCalledWith(['profile/old.png'])
+    })
+
+    it('preserves draft, Files and existing paths when the server rejects a stale snapshot', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        const file = png()
+        draft.profile.file = file
+        draft.feed.reverse()
+        const expectedCopy = structuredClone(expected)
+        api.rpc.mockResolvedValue({ data: null, error: { message: 'site_conflict', code: 'P0001' } })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('다른 창')
+
+        expect(draft.profile.file).toBe(file)
+        expect(draft.feed.map(row => row.databaseId)).toEqual([21, 20])
+        expect(expected).toEqual(expectedCopy)
+        expect(api.remove).not.toHaveBeenCalled()
+    })
+
+    it('cleans only uncommitted partial uploads and reuploads Files whose paths were deleted', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png('프로필.png')
+        draft.feed.push({ id: 'new', name: '추가.png', file: png('추가.png') })
+        api.upload.mockResolvedValueOnce({ error: null }).mockResolvedValueOnce({ error: { message: 'upload failure' } })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('업로드하지 못했습니다')
+        const firstProfilePath = api.upload.mock.calls[0][0]
+        const failedFeedPath = api.upload.mock.calls[1][0]
+        expect(api.rpc).not.toHaveBeenCalled()
+        expect(api.remove).toHaveBeenCalledTimes(1)
+        expect(api.remove).toHaveBeenCalledWith([failedFeedPath, firstProfilePath])
+
+        await saveSite(draft, expected)
+
+        expect(api.upload).toHaveBeenCalledTimes(4)
+        expect(api.upload.mock.calls[2][0]).not.toBe(firstProfilePath)
+        expect(api.rpc.mock.calls[0][1].p_data.profile.profile_image_path).toBe(api.upload.mock.calls[2][0])
+    })
+
+    it('does not clean cached uploads from an earlier ambiguous save after a later partial failure', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png('보존.png')
+        api.rpc.mockRejectedValueOnce(new TypeError('Unknown commit result'))
+        await expect(saveSite(draft, expected)).rejects.toThrow('저장 결과')
+        const ambiguousPath = api.upload.mock.calls[0][0]
+        draft.feed.push({ id: 'next', name: '다음.png', file: png('다음.png') })
+        api.upload.mockResolvedValueOnce({ error: { message: 'second upload failed' } })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('업로드하지 못했습니다')
+
+        expect(api.rpc).toHaveBeenCalledTimes(1)
+        expect(api.remove.mock.calls.flatMap(call => call[0])).not.toContain(ambiguousPath)
+        expect(api.upload).toHaveBeenCalledTimes(2)
+    })
+
+    it.each(['returned', 'thrown'])('reports committed DB success separately from a %s cleanup failure and retries the queue', async failure => {
+        const { saveSite, retryImageCleanup, getPendingImageCleanupCount } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png()
+        if (failure === 'returned') api.remove.mockResolvedValueOnce({ error: { message: 'delete unavailable' } })
+        else api.remove.mockRejectedValueOnce(new TypeError('Connection lost while deleting'))
+
+        const result = await saveSite(draft, expected)
+
+        expect(result.site.profile.profile_image_path).toBe(api.upload.mock.calls[0][0])
+        expect(result.cleanupWarning).toContain('내용은 저장됐지만')
+        expect(getPendingImageCleanupCount()).toBe(1)
+        expect(await retryImageCleanup()).toBe(true)
+        expect(getPendingImageCleanupCount()).toBe(0)
+        expect(api.remove.mock.calls.map(call => call[0])).toEqual([['profile/old.png'], ['profile/old.png']])
+        expect(api.rpc).toHaveBeenCalledTimes(1)
+    })
+
+    it('treats a malformed RPC success response as ambiguous and retains new images for retry', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png()
+        api.rpc.mockResolvedValueOnce({ data: { profile: null }, error: null })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('저장 결과')
+        expect(api.remove).not.toHaveBeenCalled()
+        await saveSite(draft, expected)
+        expect(api.upload).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects an unsupported File before any upload or RPC', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = new File(['not an image'], 'document.pdf', { type: 'application/pdf' })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('지원하지 않는 형식')
+        expect(api.upload).not.toHaveBeenCalled()
+        expect(api.rpc).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+    })
+
+    it('checks every selected File before uploading an otherwise valid profile image', async () => {
+        const { saveSite } = await import('../src/services/save')
+        const { draft, expected } = fixture()
+        draft.profile.file = png()
+        draft.feed.push({
+            id: 'invalid', name: 'document.pdf',
+            file: new File(['not an image'], 'document.pdf', { type: 'application/pdf' }),
+        })
+
+        await expect(saveSite(draft, expected)).rejects.toThrow('지원하지 않는 형식')
+        expect(api.upload).not.toHaveBeenCalled()
+        expect(api.rpc).not.toHaveBeenCalled()
+        expect(api.remove).not.toHaveBeenCalled()
+    })
+})
+
+describe('storage cleanup lifecycle', () => {
+    it('batches deletion and retains only failed paths for the next retry', async () => {
+        const { queueImageCleanup, retryImageCleanup, getPendingImageCleanupCount } = await import('../src/services/storage')
+        const paths = Array.from({ length: 205 }, (_, index) => `feed/old-${index}.png`)
+        queueImageCleanup(paths)
+        api.remove.mockResolvedValueOnce({ error: null }).mockResolvedValueOnce({ error: { message: 'retry this batch' } }).mockResolvedValueOnce({ error: null })
+
+        expect(await retryImageCleanup()).toBe(false)
+        expect(api.remove.mock.calls.map(call => call[0].length)).toEqual([100, 100, 5])
+        expect(getPendingImageCleanupCount()).toBe(100)
+        expect(await retryImageCleanup()).toBe(true)
+        expect(api.remove.mock.calls[3][0]).toEqual(paths.slice(100, 200))
+    })
+
+    it('deduplicates concurrent cleanup retries instead of deleting a batch twice', async () => {
+        const { queueImageCleanup, retryImageCleanup } = await import('../src/services/storage')
+        queueImageCleanup(['feed/one.png'])
+        let finish!: (value: { error: null }) => void
+        api.remove.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+
+        const first = retryImageCleanup()
+        const second = retryImageCleanup()
+        expect(api.remove).toHaveBeenCalledTimes(1)
+        finish({ error: null })
+        expect(await Promise.all([first, second])).toEqual([true, true])
+    })
+})

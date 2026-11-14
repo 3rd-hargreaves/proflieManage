@@ -18,6 +18,7 @@
 - `section-formatting` 브랜치에서 메인 화면의 섹션 내용에 볼드·밑줄·이탤릭·취소선·표 표시를 연결했다. 편집 화면과 DB에는 서식 기호를 포함한 원문을 유지한다.
 - `fixes-and-refactoring` 브랜치에서 인증 재확인 중 편집 내용을 보존하고 저장을 잠그며, 미저장 변경의 화면 이탈 확인을 연결했다.
 - 같은 브랜치에서 섹션·피드의 공유 드래그 잠금과 로그인 모달의 비밀번호 초기화·요청 중 닫힘 차단을 연결했다. 개선 단계별로 커밋을 나누며 PR은 전체 개선 완료 후 진행한다.
+- 저장·업로드·정리 실패와 재시도를 회귀 검사로 추가하고 GitHub Actions에 린트·단위 검사·빌드·브라우저 검사를 구성했다.
 
 이식 후 빌드·린트와 브라우저 동작 검증 67개를 통과했다. 390·768·1280px 화면과 긴 파일명 표시도 확인했다.
 
@@ -111,18 +112,22 @@ URL과 공개 키는 프로젝트의 Connect 창에서도 함께 확인할 수 �
 
 기호를 그대로 표시하려면 앞에 역슬래시를 붙인다. 예를 들어 `\*별표\*`는 별표를 포함한 텍스트로, 표 안의 `\|`는 칸을 나누지 않는 세로줄로 표시한다. 닫는 기호가 없는 문구와 HTML 태그는 텍스트로 표시한다. 넓은 표는 표 영역 안에서 가로로 스크롤할 수 있다.
 
-## 빌드와 린트
+## 빌드와 검사
 
 ```cmd
 npm run build
 npm run lint
-npm run test:format
-npm run test:editor
+npm test
+npm run test:editor:browser
 ```
 
-서식 파서 검사는 Node.js 22 개발 환경에서 실행했다.
+Node.js 22.12 이상을 사용한다. `npm test`는 서식 파서 28개, 편집 변경 감지·목록 잠금 10개, 저장 서비스 14개의 검사를 실행한다. 각각 `test:format`, `test:editor`, `test:services`로 따로 실행할 수도 있다.
 
-`npm run test:editor`는 편집 변경 감지·목록 잠금의 단위 검사 10개를 실행한다. `npm run test:editor:browser`는 테스트 서버와 실제 SDK를 사용하는 브라우저 회귀 검사 41개를 실행하며 실제 Supabase 프로젝트나 비밀번호는 사용하지 않는다. 1단계만 검사하려면 `node tests/editor.browser.mjs --phase1`을 실행한다. Node.js 22와 Chrome/Chromium이 필요하며, 설치 경로가 기본값과 다르면 `CHROME_PATH` 환경변수로 실행 파일을 지정한다. Windows 기본 경로는 `C:/Program Files/Google/Chrome/Application/chrome.exe`다. 빌드·린트와 단위·브라우저 검사를 모두 통과했다.
+`npm run test:services`는 Supabase 경계만 모킹하고 실제 저장·Storage 코드를 실행한다. 업로드→DB 저장→기존 이미지 정리 순서, 정렬만 저장, 부분 업로드 실패, 응답 유실 후 업로드 경로 재사용, 충돌 시 편집 내용 보존, 정리 실패와 재시도를 검사한다. Vitest는 실제 `.env` 파일을 읽지 않는다.
+
+`npm run test:editor:browser`는 테스트 서버와 실제 SDK를 사용하는 브라우저 회귀 검사 46개를 실행하며 실제 Supabase 프로젝트나 비밀번호는 사용하지 않는다. 1단계만 검사하려면 `node tests/editor.browser.mjs --phase1`을 실행한다. Chrome/Chromium이 필요하며 Windows·macOS·Linux의 기본 설치 경로를 찾는다. 다른 경로는 `CHROME_PATH` 환경변수로 지정한다. 전체 실행은 3분 안에 종료하며 테스트 서버·브라우저·임시 파일을 정리한다.
+
+`.github/workflows/ci.yml`은 각 브랜치의 push와 `main` 대상 PR, 수동 실행에서 `npm ci`, 린트, 단위 검사, 빌드, 브라우저 검사를 실행한다. Ubuntu와 Node.js 22를 사용하며 별도의 Supabase 환경변수나 GitHub Secrets는 필요하지 않다. 원격 CI 결과는 커밋을 푸시한 뒤 확인한다.
 
 DB 회귀 검사는 `supabase/save.test.sql`을 프로젝트 소유자 권한으로 실행한다. 모든 콘텐츠 변경은 마지막에 롤백하며, 자동증가 ID 번호에는 간격이 생길 수 있다. 관리자 전용 실행 권한, 원자적 저장, 재시도와 충돌, Storage 정책 구성을 검사한다.
 

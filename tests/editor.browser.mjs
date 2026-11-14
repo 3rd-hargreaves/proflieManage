@@ -8,8 +8,21 @@ import { fileURLToPath } from 'node:url'
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const phase = process.argv.includes('--phase1') ? 1 : 2
-const chromePath = process.env.CHROME_PATH || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/usr/bin/google-chrome')
+async function findChrome() {
+    const candidates = process.env.CHROME_PATH ? [process.env.CHROME_PATH] : process.platform === 'win32'
+        ? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe')]
+        : process.platform === 'darwin'
+            ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']
+            : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/opt/google/chrome/chrome']
+    for (const candidate of candidates) {
+        try { await fs.access(candidate); return candidate } catch {}
+    }
+    throw new Error('Chrome/Chromium executable not found. Set CHROME_PATH to its installed executable.')
+}
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
+const fetchJson = async url => (await fetch(url, { signal: AbortSignal.timeout(3000) })).json()
+const deadline = Date.now() + 180000
+const checkDeadline = () => { if (Date.now() > deadline) throw new Error('Browser regression exceeded its 3 minute deadline') }
 const passed = []
 const errors = []
 const user = { id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.test', aud: 'authenticated', role: 'authenticated', app_metadata: { provider: 'email' }, user_metadata: {}, created_at: '2026-01-01T00:00:00Z' }
@@ -36,6 +49,7 @@ const api = http.createServer(async (req,res) => {
     if(url.pathname==='/auth/v1/logout'){send(204);return}
     if(url.pathname==='/rest/v1/rpc/save_site') {
         await pause(mode.saveDelay)
+        if(mode.saveFailure){send(400,{code:'P0001',message:mode.saveFailure});return}
         const d=entry.body.p_data
         site={profile:{id:1,...d.profile},theme:{id:1,...d.theme},sections:d.sections.map((r,i)=>({...r,id:r.id??nextId++,sort_order:i+1})),keywords:d.keywords.map((r,i)=>({...r,id:r.id??nextId++,sort_order:i+1})),feed:d.feed.map((r,i)=>({...r,id:r.id??nextId++,sort_order:i+1}))}
         send(200,site);return
@@ -46,36 +60,49 @@ const api = http.createServer(async (req,res) => {
     }
     if(url.pathname.startsWith('/storage/v1/object/public/')){res.writeHead(200,{'Content-Type':'image/png'});res.end(image);return}
     if(url.pathname.startsWith('/storage/v1/object/')&&req.method==='POST'){send(200,{Key:url.pathname.split('/object/')[1]});return}
-    if(url.pathname.startsWith('/storage/v1/object/')&&req.method==='DELETE'){send(200,[]);return}
+    if(url.pathname.startsWith('/storage/v1/object/')&&req.method==='DELETE'){send(mode.deleteFailure?500:200,mode.deleteFailure?{statusCode:'500',error:'InternalError',message:'Mock cleanup failure'}:[]);return}
     send(404,{error:'unknown mock request'})
 })
 const listen = server => new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)))
 const freePort = async()=>{const server=http.createServer();const port=await listen(server);await new Promise(r=>server.close(r));return port}
 let vite,chrome,ws,temp
+let launchError
+const pending = new Map()
 let viteLogs=''
 let cdp,js
 const dialogs=[]
 let acceptDialog=false
 const check=(condition,label)=>{assert.ok(condition,label);passed.push(label)}
 try {
-    await fs.access(chromePath)
+    const chromePath = await findChrome()
     temp=await fs.mkdtemp(path.join(os.tmpdir(),'profile-editor-check-'))
     const picture=path.join(temp,'선택 이미지.png');await fs.writeFile(picture,image)
     const apiPort=await listen(api),vitePort=await freePort(),debugPort=await freePort()
     const appUrl=`http://127.0.0.1:${vitePort}`
     vite=spawn(process.execPath,[path.join(project,'node_modules/vite/bin/vite.js'),'--host','127.0.0.1','--port',String(vitePort),'--strictPort'],{cwd:project,env:{...process.env,VITE_SUPABASE_URL:`http://127.0.0.1:${apiPort}`,VITE_SUPABASE_PUBLISHABLE_KEY:'test-publishable-key',VITE_ADMIN_EMAIL:user.email,VITE_ADMIN_USER_ID:user.id,VITE_SUPABASE_STORAGE_BUCKET:'site-images'},windowsHide:true,stdio:['ignore','pipe','pipe']})
+    vite.on('error',error=>{launchError=error})
     for(const stream of [vite.stdout,vite.stderr])stream.on('data',chunk=>{viteLogs=(viteLogs+chunk.toString()).slice(-3000)})
-    for(let i=0;i<100;i++){try{if((await fetch(appUrl)).ok)break}catch{} await pause(100);if(i===99)throw new Error('Vite did not start')}
+    for(let i=0;i<100;i++){checkDeadline();if(launchError)throw launchError;try{if((await fetch(appUrl,{signal:AbortSignal.timeout(3000)})).ok)break}catch{} await pause(100);if(i===99)throw new Error(`Vite did not start: ${viteLogs}`)}
     chrome=spawn(chromePath,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check',`--remote-debugging-port=${debugPort}`,`--user-data-dir=${path.join(temp,'chrome')}`,'about:blank'],{windowsHide:true,stdio:'ignore'})
+    chrome.on('error',error=>{launchError=error})
     let target
-    for(let i=0;i<100;i++){try{target=(await(await fetch(`http://127.0.0.1:${debugPort}/json`)).json()).find(t=>t.type==='page');if(target)break}catch{}await pause(100)}
+    for(let i=0;i<100;i++){checkDeadline();if(launchError)throw launchError;try{target=(await fetchJson(`http://127.0.0.1:${debugPort}/json`)).find(t=>t.type==='page');if(target)break}catch{}await pause(100)}
     if(!target)throw new Error('Chrome did not start; set CHROME_PATH to a Chromium executable')
-    ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise((r,j)=>{ws.addEventListener('open',r,{once:true});ws.addEventListener('error',j,{once:true})})
-    let sequence=0;const pending=new Map()
-    cdp=(method,params={})=>new Promise((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}))})
+    ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('CDP connection timed out')),10000);ws.addEventListener('open',()=>{clearTimeout(timer);resolve()},{once:true});ws.addEventListener('error',()=>{clearTimeout(timer);reject(new Error('CDP connection failed'))},{once:true})})
+    let sequence=0
+    cdp=(method,params={})=>new Promise((resolve,reject)=>{
+        try{checkDeadline()}catch(error){reject(error);return}
+        if(ws.readyState!==WebSocket.OPEN){reject(new Error(`CDP disconnected before ${method}`));return}
+        const id=++sequence
+        const timer=setTimeout(()=>{pending.delete(id);reject(new Error(`CDP timed out: ${method}`))},15000)
+        pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}})
+        ws.send(JSON.stringify({id,method,params}))
+    })
+    ws.addEventListener('close',()=>{for(const task of pending.values())task.reject(new Error('CDP connection closed'));pending.clear()})
+    ws.addEventListener('error',()=>{for(const task of pending.values())task.reject(new Error('CDP connection error'));pending.clear()})
     ws.addEventListener('message',event=>{
         const message=JSON.parse(event.data)
-        if(message.id){const task=pending.get(message.id);pending.delete(message.id);if(message.error)task.reject(new Error(JSON.stringify(message.error)));else task.resolve(message.result)}
+        if(message.id){const task=pending.get(message.id);pending.delete(message.id);if(task){if(message.error)task.reject(new Error(JSON.stringify(message.error)));else task.resolve(message.result)}}
         if(message.method==='Runtime.exceptionThrown')errors.push(message.params.exceptionDetails.exception?.description||message.params.exceptionDetails.text)
         if(message.method==='Page.javascriptDialogOpening'){
             dialogs.push({...message.params,accepted:acceptDialog})
@@ -165,6 +192,20 @@ try {
         await key('ArrowDown');await key('Space',' ');await pause(250)
         await save();const payload=requests.filter(r=>r.path==='/rest/v1/rpc/save_site').at(-1).body
         check(payload.p_data.feed[0].id===21 && payload.p_data.feed[1].id===20,'잠금 적용 후 기존 ID 순서 저장 유지')
+        await reset();await set('#profileName','충돌 후 재시도');await selectFile('#profileFile')
+        const conflictPreview=await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src`)
+        mode.saveFailure='site_conflict';await js(`document.querySelector('button[type=submit]').click()`)
+        await until(`document.body.innerText.includes('다른 창에서') && !document.querySelector('button[type=submit]').matches(':disabled')`,'save conflict')
+        check(await js(`document.querySelector('#profileName').value==='충돌 후 재시도' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(conflictPreview)}`),'저장 충돌 응답에 원문·선택 File 유지')
+        check(site.profile.name==='검증 이름' && !requests.some(r=>r.path.startsWith('/storage/')&&r.method==='DELETE'),'저장 실패 시 기존 DB·파일 삭제 없음')
+        const uploadCount=requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length
+        mode.saveFailure=null;await save()
+        check(site.profile.name==='충돌 후 재시도' && uploadCount===1 && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length===1,'저장 재시도는 업로드 경로를 재사용')
+        await reset();await nativeClick('#feedItems .picEditItem .btn');mode.deleteFailure=true;await save()
+        check(site.feed.length===1 && await js(`document.body.innerText.includes('내용은 저장됐지만')`),'파일 정리 실패를 DB 저장 성공과 구별')
+        const savedRequests=requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').length
+        mode.deleteFailure=false;await button('이미지 정리 다시 시도');await until(`!document.body.innerText.includes('내용은 저장됐지만')`,'cleanup retry')
+        check(requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').length===savedRequests,'파일 정리 재시도는 DB를 다시 저장하지 않음')
         await focus(sectionSelector);await key('Space',' ');await externalSignout();await until(`![...document.querySelectorAll('.dragHandle')].some(b=>!b.matches(':disabled')) && !document.querySelector('.sortableDragging')`,'auth locks drag')
         check(await js(`[...document.querySelectorAll('.dragHandle')].every(b=>b.matches(':disabled'))`),'인증 잠금 중 활성 드래그 종료·다른 목록 시작 차단')
     }
@@ -174,6 +215,8 @@ try {
     const diagnostics=js?await js(`({url:location.pathname,buttons:[...document.querySelectorAll('button')].map(b=>({text:b.textContent,disabled:b.matches(':disabled')}))})`).catch(()=>null):null;console.error(JSON.stringify({phase,passed:passed.length,checks:passed,errors,diagnostics,dialogs,viteLogs,requests:requests.slice(-12).map(r=>({method:r.method,path:r.path})),failure:error.stack},null,2));process.exitCode=1
 } finally {
     if(cdp){try{await Promise.race([cdp('Browser.close'),pause(1000)])}catch{}}
+    for(const task of pending.values())task.reject(new Error('Browser test finished'))
+    pending.clear()
     ws?.close();chrome?.kill();vite?.kill();api.closeAllConnections();await new Promise(resolve=>api.close(resolve))
     if(temp){const resolved=path.resolve(temp);if(!resolved.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(resolved).startsWith('profile-editor-check-')){console.error('Unsafe temporary cleanup path');process.exitCode=1}else{await pause(300);await fs.rm(resolved,{recursive:true,force:true,maxRetries:5,retryDelay:200})}}
 }
