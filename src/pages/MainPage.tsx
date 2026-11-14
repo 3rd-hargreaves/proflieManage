@@ -5,10 +5,10 @@ import ImageModal from '../components/ImageModal'
 import LoginModal from '../components/LoginModal'
 import SiteImage from '../components/SiteImage'
 import SectionContent from '../components/SectionContent'
-import { loadSite } from '../services/site'
 import { getImageUrl } from '../services/storage'
 import type { SiteData } from '../types/site'
 import { applyTheme } from '../utils/theme'
+import { useSiteQuery } from '../hooks/useSiteQuery'
 
 interface MainPageProps {
     isAdmin: boolean
@@ -16,47 +16,22 @@ interface MainPageProps {
     onLoginSuccess: () => Promise<void>
 }
 
-type SiteState =
-    | { status: 'loading' }
-    | { status: 'error'; message: string }
-    | { status: 'ready'; data: SiteData }
-
 export default function MainPage({ isAdmin, onOpenEditor, onLoginSuccess }: MainPageProps) {
     const [modal, setModal] = useState<'login' | GalleryImage | null>(null)
-    const [siteState, setSiteState] = useState<SiteState>({ status: 'loading' })
-    const [loadAttempt, setLoadAttempt] = useState(0)
     const closeModal = useCallback(() => setModal(null), [])
 
     useEffect(() => {
-        const controller = new AbortController()
         const previousTitle = document.title
-        let restoreTheme: (() => void) | undefined
         document.title = '프로필'
+        return () => { document.title = previousTitle }
+    }, [])
 
-        async function load() {
-            try {
-                const data = await loadSite(controller.signal)
-                if (controller.signal.aborted) return
-                restoreTheme = applyTheme(data.theme)
-                document.title = data.profile.name
-                setSiteState({ status: 'ready', data })
-            } catch (error) {
-                if (controller.signal.aborted) return
-                controller.abort()
-                setSiteState({
-                    status: 'error',
-                    message: error instanceof Error ? error.message : '사이트 정보를 불러오지 못했습니다.',
-                })
-            }
-        }
-
-        void load()
-        return () => {
-            controller.abort()
-            restoreTheme?.()
-            document.title = previousTitle
-        }
-    }, [loadAttempt])
+    const showSite = useCallback((site: SiteData) => {
+        const restoreTheme = applyTheme(site.theme)
+        document.title = site.profile.name
+        return restoreTheme
+    }, [])
+    const { state: siteState, reload } = useSiteQuery({ onLoad: showSite })
 
     const site = siteState.status === 'ready' ? siteState.data : null
     const images: GalleryImage[] = site ? site.feed.map((image, index) => ({
@@ -86,8 +61,8 @@ export default function MainPage({ isAdmin, onOpenEditor, onLoginSuccess }: Main
                             type="button"
                             className="btn h30 border borderRad"
                             onClick={() => {
-                                setSiteState({ status: 'loading' })
-                                setLoadAttempt(attempt => attempt + 1)
+                                document.title = '프로필'
+                                reload()
                             }}
                         >다시 시도</button>
                     </div>

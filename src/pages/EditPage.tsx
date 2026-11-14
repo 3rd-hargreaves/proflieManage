@@ -1,21 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import type { SubmitEvent } from 'react'
 import FeedEditor from '../components/FeedEditor'
 import ProfileEditor from '../components/ProfileEditor'
 import SectionEditor from '../components/SectionEditor'
 import ThemeEditor from '../components/ThemeEditor'
 import SortableList from '../components/SortableList'
-import { loadSite } from '../services/site'
-import { getPendingImageCleanupCount, retryImageCleanup, saveSite } from '../services/save'
-import type { SiteData, SiteEditDraft } from '../types/site'
 import { applyTheme, themeFields, toThemeData } from '../utils/theme'
 import { isHexColor } from '../utils/validation'
-import { toDraft, validateSiteDraft } from '../utils/siteDraft'
+import { validateSiteDraft } from '../utils/siteDraft'
 import type { DraftValidationIssue } from '../utils/siteDraft'
-import { isEditorDirty } from '../utils/editorDirty'
 import { feedImageLimit } from '../utils/uploadLimits'
 import type { LeaveGuard } from '../hooks/useGuardedNavigation'
-import { useSortLock } from '../hooks/useSortLock'
+import { useSiteEditor } from '../hooks/useSiteEditor'
 
 function validationField(form: HTMLFormElement, issue: DraftValidationIssue): HTMLInputElement | HTMLTextAreaElement | null {
     switch (issue.field) {
@@ -46,64 +42,17 @@ interface EditPageProps {
 
 export default function EditPage({ onLogout, signingOut, logoutError, authNotice, onRetryAuth, onReauthenticate, onExit, onLeaveGuardChange, canWrite }: EditPageProps) {
     const form = useRef<HTMLFormElement>(null)
-    const savingRef = useRef(false)
-    const { lock: sortLock, activeListId } = useSortLock()
-    const sorting = activeListId !== null
-    const mounted = useRef(true)
-    const cleaningRef = useRef(false)
-    const leaveState = useRef<{ baseline: SiteData | null, draft: SiteEditDraft | null }>({ baseline: null, draft: null })
-    const [baseline, setBaseline] = useState<SiteData | null>(null)
-    const [draft, setDraft] = useState<SiteEditDraft | null>(null)
-    const [loadAttempt, setLoadAttempt] = useState(0)
-    const [loading, setLoading] = useState(true)
-    const [loadError, setLoadError] = useState<string | null>(null)
-    const [focusedSection, setFocusedSection] = useState<string | null>(null)
-    const [saving, setSaving] = useState(false)
-    const [saveError, setSaveError] = useState<string | null>(null)
-    const [saved, setSaved] = useState(false)
-    const [cleanupWarning, setCleanupWarning] = useState<string | null>(null)
-    const [cleaning, setCleaning] = useState(false)
-    const [editorVersion, setEditorVersion] = useState(0)
-    const editingDisabled = saving || signingOut || cleaning || !!authNotice
+    const {
+        baseline, draft, loading, loadError, focusedSection, saving, saveError, saved,
+        cleanupWarning, cleaning, editorVersion, sorting, sortLock, editingDisabled,
+        pendingCleanupCount, change, addSection, reload, canSave, save: saveDraft, retryCleanup, reportError,
+    } = useSiteEditor({ signingOut, authBlocked: !!authNotice, canWrite, onLeaveGuardChange })
 
     useEffect(() => {
-        onLeaveGuardChange(() => isEditorDirty(leaveState.current.baseline, leaveState.current.draft)
-            || savingRef.current || cleaningRef.current || sortLock.getOwner() !== null)
-        return () => onLeaveGuardChange(null)
-    }, [onLeaveGuardChange, sortLock])
-
-    useEffect(() => {
-        mounted.current = true
         const previousTitle = document.title
         document.title = '관리자'
-        return () => {
-            mounted.current = false
-            document.title = previousTitle
-        }
+        return () => { document.title = previousTitle }
     }, [])
-
-    useEffect(() => {
-        const controller = new AbortController()
-        async function load() {
-            try {
-                const site = await loadSite(controller.signal)
-                if (controller.signal.aborted) return
-                const nextDraft = toDraft(site)
-                leaveState.current = { baseline: site, draft: nextDraft }
-                setBaseline(site)
-                setDraft(nextDraft)
-                setEditorVersion(version => version + 1)
-                setLoading(false)
-            } catch (error) {
-                if (controller.signal.aborted) return
-                controller.abort()
-                setLoadError(error instanceof Error ? error.message : '수정할 정보를 불러오지 못했습니다.')
-                setLoading(false)
-            }
-        }
-        void load()
-        return () => controller.abort()
-    }, [loadAttempt])
 
     const theme = draft?.theme
     useEffect(() => {
@@ -111,28 +60,9 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
         return applyTheme({ id: 1, ...toThemeData(theme) })
     }, [theme])
 
-    function change(next: SiteEditDraft) {
-        leaveState.current.draft = next
-        setDraft(next)
-        setSaved(false)
-    }
-
-    function reload() {
-        if (savingRef.current || sortLock.getOwner() !== null || cleaning || authNotice || !canWrite()) return
-        setLoading(true)
-        setLoadError(null)
-        setSaveError(null)
-        setSaved(false)
-        setDraft(null)
-        setBaseline(null)
-        leaveState.current = { baseline: null, draft: null }
-        setFocusedSection(null)
-        setLoadAttempt(attempt => attempt + 1)
-    }
-
     async function save(event: SubmitEvent<HTMLFormElement>) {
         event.preventDefault()
-        if (!form.current || !draft || !baseline || savingRef.current || sortLock.getOwner() !== null || signingOut || cleaning || authNotice || !canWrite()) return
+        if (!form.current || !draft || !baseline || !canSave()) return
 
         const fields = form.current.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input:not([type="file"]), textarea')
         for (const field of fields) field.setCustomValidity('')
@@ -141,51 +71,10 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
         if (issues.length) {
             const field = validationField(form.current, issues[0])
             if (field) field.reportValidity()
-            else setSaveError(issues[0].message)
+            else reportError(issues[0].message)
             return
         }
-
-        savingRef.current = true
-        setSaving(true)
-        setSaveError(null)
-        setSaved(false)
-        try {
-            const result = await saveSite(draft, baseline)
-            if (!mounted.current) return
-            const nextDraft = toDraft(result.site)
-            leaveState.current = { baseline: result.site, draft: nextDraft }
-            setBaseline(result.site)
-            setDraft(nextDraft)
-            setFocusedSection(null)
-            setEditorVersion(version => version + 1)
-            setCleanupWarning(result.cleanupWarning)
-            setSaved(true)
-        } catch (error) {
-            if (mounted.current) {
-                setSaveError(error instanceof Error ? error.message : '저장하지 못했습니다. 다시 시도해 주세요.')
-                if (getPendingImageCleanupCount() > 0) {
-                    setCleanupWarning('미저장 이미지 정리가 남아 있습니다. 다시 시도해 주세요.')
-                }
-            }
-        } finally {
-            savingRef.current = false
-            if (mounted.current) setSaving(false)
-        }
-    }
-
-    async function retryCleanup() {
-        if (cleaningRef.current || savingRef.current || sortLock.getOwner() !== null || authNotice || !canWrite()) return
-        cleaningRef.current = true
-        setCleaning(true)
-        try {
-            const complete = await retryImageCleanup()
-            if (mounted.current) setCleanupWarning(complete ? null : '일부 이전 이미지 정리가 남아 있습니다. 다시 시도해 주세요.')
-        } catch {
-            if (mounted.current) setCleanupWarning('이미지 정리를 완료하지 못했습니다. 다시 시도해 주세요.')
-        } finally {
-            cleaningRef.current = false
-            if (mounted.current) setCleaning(false)
-        }
+        await saveDraft()
     }
 
     return (
@@ -241,11 +130,7 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
                                 className="btn h30 border borderRad"
                                 type="button"
                                 disabled={sorting}
-                                onClick={() => {
-                                    const id = crypto.randomUUID()
-                                    change({ ...draft, sections: [...draft.sections, { id, title: '', content: '' }] })
-                                    setFocusedSection(id)
-                                }}
+                                onClick={addSection}
                             >섹션 추가</button>
                         </div>
                         <div className="card widthFull pdLg flexColumn gapSm">
@@ -279,7 +164,7 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
                     {cleanupWarning && (
                         <div className="card pdLg flexColumn gapSm">
                             <p role="status">{cleanupWarning}</p>
-                            {getPendingImageCleanupCount() > 0 && (
+                            {pendingCleanupCount > 0 && (
                                 <button className="btn h30 border borderRad" type="button" disabled={editingDisabled || sorting} onClick={retryCleanup}>
                                     {cleaning ? '이미지 정리 중…' : '이미지 정리 다시 시도'}
                                 </button>

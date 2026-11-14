@@ -81,7 +81,7 @@ const api = http.createServer(async (req,res) => {
     }
     if(url.pathname.startsWith('/storage/v1/object/public/')){res.writeHead(200,{'Content-Type':'image/png'});res.end(image);return}
     if(url.pathname.startsWith('/storage/v1/object/')&&req.method==='POST'){send(200,{Key:url.pathname.split('/object/')[1]});return}
-    if(url.pathname.startsWith('/storage/v1/object/')&&req.method==='DELETE'){send(mode.deleteFailure?500:200,mode.deleteFailure?{statusCode:'500',error:'InternalError',message:'Mock cleanup failure'}:[]);return}
+    if(url.pathname.startsWith('/storage/v1/object/')&&req.method==='DELETE'){const failure=mode.deleteFailure;await pause(mode.deleteDelay??0);send(failure?500:200,failure?{statusCode:'500',error:'InternalError',message:'Mock cleanup failure'}:[]);return}
     send(404,{error:'unknown mock request'})
 })
 const listen = server => new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)))
@@ -135,6 +135,7 @@ try {
     })
     js=async expression=>{const result=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(result.exceptionDetails)throw new Error(result.exceptionDetails.exception?.description||result.exceptionDetails.text);return result.result.value}
     const until=async(expression,label,timeout=20000)=>{const start=Date.now();while(Date.now()-start<timeout){if(await js(expression))return;await pause(70)}throw new Error(`Timed out: ${label}\n${await js('document.body.innerText')}`)}
+    const untilRequests=async(condition,label)=>{const start=Date.now();while(Date.now()-start<5000){checkDeadline();if(condition())return;await pause(20)}throw new Error(`Timed out waiting for mock request: ${label}`)}
     const hasEditor=()=>js('!!document.querySelector("#profileName")')
     const saveDisabled=()=>js('document.querySelector("button[type=submit]")?.matches(":disabled")')
     const button=async pattern=>js(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>new RegExp(${JSON.stringify(pattern)}).test(b.textContent));if(!b)throw new Error('Missing button '+${JSON.stringify(pattern)});b.click();return true})()`)
@@ -354,6 +355,55 @@ try {
         check(reloadedPayload.sections.map(row=>row.id).join(',')==='11,10' && reloadedPayload.feed.map(row=>row.id).join(',')==='21,20' && reloadedPayload.keywords.map(row=>row.id).join(',')===savedKeywordIds.join(',') && reloadedPayload.sections[0].content===secondSource && reloadedPayload.sections[1].content===sectionSource,'재조회 후 다시 저장해도 기존 ID와 CRLF 원문 유지')
         await navigate('/');await until(`document.querySelector('.profileName')?.textContent==='공통 이름'`,'shared values public reload')
         check(await js(`document.title==='공통 이름' && document.querySelector('.profileMessage span').textContent==='재조회 상태' && [...document.querySelectorAll('.sectionText')].map(field=>field.textContent).join('|')==='둘째 섹션|공통 제목' && document.querySelector('.sectionContent strong')?.textContent==='원문' && document.querySelector('.sectionContent u')?.textContent==='밑줄' && [...document.querySelectorAll('.keywordList .keyword')].map(field=>field.textContent).join('|')==='#둘째|#첫째|#둘째' && ${JSON.stringify(sharedColors)}.every(({variable,value})=>getComputedStyle(document.documentElement).getPropertyValue(variable).trim()===value)`),'공통 변환으로 저장한 내용은 메인 재조회에서도 서식·키워드·테마로 표시')
+
+        await reset();await set('#profileName','동시 저장 보호');await selectFile('#profileFile');mode.saveDelay=900
+        await js(`(()=>{const form=document.querySelector('form');for(let i=0;i<2;i++)form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))})()`)
+        await untilRequests(()=>requests.some(r=>r.path==='/rest/v1/rpc/save_site'),'duplicate submit save started')
+        await until(`document.body.innerText.includes('저장 성공') && !document.querySelector('button[type=submit]').matches(':disabled')`,'duplicate submit saved')
+        check(site.profile.name==='동시 저장 보호' && requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').length===1 && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='POST').length===1,'같은 틱의 중복 submit은 이미지 업로드·DB 저장 각각 한 번')
+
+        await reset();mode.saveDelay=900;await js(`document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`)
+        await untilRequests(()=>requests.some(r=>r.path==='/rest/v1/rpc/save_site'),'unchanged save started')
+        dialogs.length=0;await js('history.back()');await pause(150)
+        check(dialogs.some(dialog=>dialog.type==='confirm') && await hasEditor(),'수정 내용이 없는 저장 중에도 뒤로가기 취소로 편집 화면 유지')
+        await until(`document.body.innerText.includes('저장 성공') && !document.querySelector('button[type=submit]').matches(':disabled')`,'unchanged save completed')
+        check(await js(`(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return !event.defaultPrevented})()`),'변경 없는 저장 완료 후에도 이탈 잠금 정상 해제')
+
+        await reset();await nativeClick('#feedItems .picEditItem .btn');mode.deleteFailure=true;await save()
+        requests.length=0;await focus('[data-section] .dragHandle');await key('Space',' ')
+        await js(`document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`);await pause(100)
+        check(await saveDisabled() && !requests.some(r=>r.path==='/rest/v1/rpc/save_site'||(r.path.startsWith('/storage/')&&r.method==='DELETE')),'정리 경고가 남은 정렬 중 강제 submit도 저장·정리 요청 차단')
+        await key('Escape');mode.deleteFailure=false;mode.deleteDelay=900
+        await js(`(()=>{const retry=[...document.querySelectorAll('button')].find(button=>button.textContent.includes('이미지 정리 다시 시도'));retry.click();retry.click();document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))})()`)
+        await untilRequests(()=>requests.some(r=>r.path.startsWith('/storage/')&&r.method==='DELETE'),'cleanup retry started');await pause(100)
+        check(await saveDisabled() && requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='DELETE').length===1 && !requests.some(r=>r.path==='/rest/v1/rpc/save_site'),'같은 틱의 정리 재시도 2회와 submit은 정리 1회·DB 저장 0회')
+        await until(`!document.body.innerText.includes('내용은 저장됐지만') && !document.querySelector('button[type=submit]').matches(':disabled')`,'duplicate cleanup completed')
+        check(requests.filter(r=>r.path.startsWith('/storage/')&&r.method==='DELETE').length===1 && !requests.some(r=>r.path==='/rest/v1/rpc/save_site'),'정리 완료 후에도 중복 요청과 지연된 DB 저장 없음')
+        await set('#profileName','정리 후 저장');await save()
+        check(site.profile.name==='정리 후 저장' && requests.filter(r=>r.path==='/rest/v1/rpc/save_site'&&r.method==='POST').length===1,'정리 잠금 해제 후 새 편집 내용은 정상 저장')
+
+        await reset()
+        const sameTickChange=await js(`(()=>{const field=document.querySelector('#profileName');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(field,'같은 틱 변경');field.dispatchEvent(new Event('input',{bubbles:true}));const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented})()`)
+        check(sameTickChange,'React 재렌더 전 입력 직후에도 최신 초안으로 미저장 이탈 차단')
+        const sameTickRevert=await js(`(()=>{const field=document.querySelector('#profileName');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(field,'검증 이름');field.dispatchEvent(new Event('input',{bubbles:true}));const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return !event.defaultPrevented})()`)
+        check(sameTickRevert,'React 재렌더 전 원상복구 직후에도 미저장 이탈 잠금 해제')
+
+        mode.loadStatus=503;requests.length=0;await navigate('/')
+        await until(`document.querySelector('main [role=alert]')?.textContent.includes('불러오지 못')`,'consecutive query first failure')
+        mode.loadDelay=250
+        await js(`(()=>{const retry=[...document.querySelectorAll('button')].find(button=>button.textContent==='다시 시도');retry.click();retry.click()})()`)
+        await untilRequests(()=>loadRequests().length===2,'consecutive query retry started')
+        await until(`document.querySelector('main [role=alert]')?.textContent.includes('불러오지 못') && document.querySelector('main').getAttribute('aria-busy')==='false'`,'consecutive query second failure')
+        check(loadRequests().length===2 && directTableRequests().length===0,'조회 오류 후 같은 틱의 중복 재시도도 새 RPC 한 번으로 오류 상태 복귀')
+        site=snapshot('stale');mode.loadStatus=200;mode.loadDelay=1600
+        await js(`(()=>{const retry=[...document.querySelectorAll('button')].find(button=>button.textContent==='다시 시도');retry.click();retry.click()})()`)
+        await untilRequests(()=>loadRequests().length===3,'consecutive query delayed retry started')
+        const cancelledRetry=loadRequests()[2]
+        site=snapshot('current');mode.loadDelay=0;await nativeClick('.edit');await until(`document.querySelector('#profileName')?.value==='current 이름'`,'editor after repeated query failure')
+        await pause(1800)
+        check(cancelledRetry.cancelled && loadRequests().length===4 && await js(`document.querySelector('#profileName').value==='current 이름' && document.querySelector('[data-section] textarea').value==='current 둘째 내용' && !document.querySelector('main [role=alert]')`),'연속 조회 실패 뒤 재시도도 이탈 시 취소되어 최신 편집 내용을 보존')
+        await js('history.back()');await until(`document.querySelector('.profileName')?.textContent==='current 이름'`,'query after repeated errors and cancellation')
+        check(loadRequests().length===5 && directTableRequests().length===0 && await js(`document.title==='current 이름' && document.querySelector('main').getAttribute('aria-busy')==='false'`),'조회 실패·재시도·취소를 반복한 뒤에도 다음 메인 조회 정상 복구')
     }
     check(errors.length===0,'브라우저 실행 예외 없음')
     console.log(JSON.stringify({phase,passed:passed.length,checks:passed,errors},null,2))
