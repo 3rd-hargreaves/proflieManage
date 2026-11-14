@@ -10,6 +10,8 @@ import { getPendingImageCleanupCount, imageFileName, retryImageCleanup, saveSite
 import type { SiteData, SiteEditDraft } from '../types/site'
 import { applyTheme } from '../utils/theme'
 import { isHexColor, validateRequired } from '../utils/validation'
+import { isEditorDirty } from '../utils/editorDirty'
+import type { LeaveGuard } from '../hooks/useGuardedNavigation'
 
 function toDraft(site: SiteData): SiteEditDraft {
     return {
@@ -39,13 +41,21 @@ interface EditPageProps {
     onLogout: () => Promise<void>
     signingOut: boolean
     logoutError: string | null
+    authNotice: { message: string, checking: boolean, requiresLogin: boolean } | null
+    onRetryAuth: () => void
+    onReauthenticate: () => void
+    onExit: () => void
+    onLeaveGuardChange: (guard: LeaveGuard) => void
+    canWrite: () => boolean
 }
 
-export default function EditPage({ onLogout, signingOut, logoutError }: EditPageProps) {
+export default function EditPage({ onLogout, signingOut, logoutError, authNotice, onRetryAuth, onReauthenticate, onExit, onLeaveGuardChange, canWrite }: EditPageProps) {
     const form = useRef<HTMLFormElement>(null)
     const savingRef = useRef(false)
     const sortingRef = useRef(false)
     const mounted = useRef(true)
+    const cleaningRef = useRef(false)
+    const leaveState = useRef<{ baseline: SiteData | null, draft: SiteEditDraft | null }>({ baseline: null, draft: null })
     const [baseline, setBaseline] = useState<SiteData | null>(null)
     const [draft, setDraft] = useState<SiteEditDraft | null>(null)
     const [loadAttempt, setLoadAttempt] = useState(0)
@@ -59,11 +69,17 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
     const [cleanupWarning, setCleanupWarning] = useState<string | null>(null)
     const [cleaning, setCleaning] = useState(false)
     const [editorVersion, setEditorVersion] = useState(0)
-    const editingDisabled = saving || signingOut || cleaning
+    const editingDisabled = saving || signingOut || cleaning || !!authNotice
     const onSortingChange = useCallback((active: boolean) => {
         sortingRef.current = active
         setSorting(active)
     }, [])
+
+    useEffect(() => {
+        onLeaveGuardChange(() => isEditorDirty(leaveState.current.baseline, leaveState.current.draft)
+            || savingRef.current || cleaningRef.current || sortingRef.current)
+        return () => onLeaveGuardChange(null)
+    }, [onLeaveGuardChange])
 
     useEffect(() => {
         mounted.current = true
@@ -81,8 +97,10 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
             try {
                 const site = await loadSite(controller.signal)
                 if (controller.signal.aborted) return
+                const nextDraft = toDraft(site)
+                leaveState.current = { baseline: site, draft: nextDraft }
                 setBaseline(site)
-                setDraft(toDraft(site))
+                setDraft(nextDraft)
                 setEditorVersion(version => version + 1)
                 setLoading(false)
             } catch (error) {
@@ -109,25 +127,27 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
     }, [theme])
 
     function change(next: SiteEditDraft) {
+        leaveState.current.draft = next
         setDraft(next)
         setSaved(false)
     }
 
     function reload() {
-        if (savingRef.current || sortingRef.current || cleaning) return
+        if (savingRef.current || sortingRef.current || cleaning || authNotice || !canWrite()) return
         setLoading(true)
         setLoadError(null)
         setSaveError(null)
         setSaved(false)
         setDraft(null)
         setBaseline(null)
+        leaveState.current = { baseline: null, draft: null }
         setFocusedSection(null)
         setLoadAttempt(attempt => attempt + 1)
     }
 
     async function save(event: SubmitEvent<HTMLFormElement>) {
         event.preventDefault()
-        if (!form.current || !draft || !baseline || savingRef.current || sortingRef.current || signingOut || cleaning) return
+        if (!form.current || !draft || !baseline || savingRef.current || sortingRef.current || signingOut || cleaning || authNotice || !canWrite()) return
 
         const themeFields = form.current.querySelectorAll<HTMLInputElement>('[data-theme]')
         for (const field of themeFields) {
@@ -156,8 +176,10 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
         try {
             const result = await saveSite(draft, baseline)
             if (!mounted.current) return
+            const nextDraft = toDraft(result.site)
+            leaveState.current = { baseline: result.site, draft: nextDraft }
             setBaseline(result.site)
-            setDraft(toDraft(result.site))
+            setDraft(nextDraft)
             setFocusedSection(null)
             setEditorVersion(version => version + 1)
             setCleanupWarning(result.cleanupWarning)
@@ -176,7 +198,8 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
     }
 
     async function retryCleanup() {
-        if (cleaning || savingRef.current) return
+        if (cleaningRef.current || savingRef.current || sortingRef.current || authNotice || !canWrite()) return
+        cleaningRef.current = true
         setCleaning(true)
         try {
             const complete = await retryImageCleanup()
@@ -184,12 +207,24 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
         } catch {
             if (mounted.current) setCleanupWarning('이미지 정리를 완료하지 못했습니다. 다시 시도해 주세요.')
         } finally {
+            cleaningRef.current = false
             if (mounted.current) setCleaning(false)
         }
     }
 
     return (
         <main className="flexColumn gapLg" aria-busy={loading || saving}>
+            {authNotice && (
+                <div className="card pdLg flexColumn gapSm">
+                    <p role={authNotice.checking ? 'status' : 'alert'}>{authNotice.message}</p>
+                    <button className="btn h30 border borderRad" type="button"
+                        disabled={authNotice.checking || saving || cleaning || sorting || signingOut}
+                        onClick={authNotice.requiresLogin ? onReauthenticate : onRetryAuth}>
+                        {authNotice.checking ? '로그인 확인 중…' : authNotice.requiresLogin ? '다시 로그인' : '다시 확인'}
+                    </button>
+                    <button className="btn h30 border borderRad" type="button" disabled={saving || cleaning || sorting || signingOut} onClick={onExit}>메인으로</button>
+                </div>
+            )}
             {loading && <p className="card pdLg text3" role="status">수정할 정보를 불러오는 중…</p>}
             {loadError && (
                 <div className="card pdLg flexColumn gapMd">
@@ -255,7 +290,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
                         <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} onSortingChange={onSortingChange} />
                         <button className="btn h30 border borderRad widthFull" type="submit" disabled={sorting}>{saving ? '저장 중…' : '저장'}</button>
                     </fieldset>
-                    {saved && <p role="status">저장했습니다.</p>}
+                    {saved && <p role="status">저장 성공</p>}
                     {saveError && (
                         <div className="card pdLg flexColumn gapSm">
                             <p role="alert">{saveError}</p>
