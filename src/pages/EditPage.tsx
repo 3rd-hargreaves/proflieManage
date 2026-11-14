@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SubmitEvent } from 'react'
 import FeedEditor from '../components/FeedEditor'
 import ProfileEditor from '../components/ProfileEditor'
@@ -12,6 +12,7 @@ import { applyTheme } from '../utils/theme'
 import { isHexColor, validateRequired } from '../utils/validation'
 import { isEditorDirty } from '../utils/editorDirty'
 import type { LeaveGuard } from '../hooks/useGuardedNavigation'
+import { useSortLock } from '../hooks/useSortLock'
 
 function toDraft(site: SiteData): SiteEditDraft {
     return {
@@ -52,7 +53,8 @@ interface EditPageProps {
 export default function EditPage({ onLogout, signingOut, logoutError, authNotice, onRetryAuth, onReauthenticate, onExit, onLeaveGuardChange, canWrite }: EditPageProps) {
     const form = useRef<HTMLFormElement>(null)
     const savingRef = useRef(false)
-    const sortingRef = useRef(false)
+    const { lock: sortLock, activeListId } = useSortLock()
+    const sorting = activeListId !== null
     const mounted = useRef(true)
     const cleaningRef = useRef(false)
     const leaveState = useRef<{ baseline: SiteData | null, draft: SiteEditDraft | null }>({ baseline: null, draft: null })
@@ -63,23 +65,18 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
     const [loadError, setLoadError] = useState<string | null>(null)
     const [focusedSection, setFocusedSection] = useState<string | null>(null)
     const [saving, setSaving] = useState(false)
-    const [sorting, setSorting] = useState(false)
     const [saveError, setSaveError] = useState<string | null>(null)
     const [saved, setSaved] = useState(false)
     const [cleanupWarning, setCleanupWarning] = useState<string | null>(null)
     const [cleaning, setCleaning] = useState(false)
     const [editorVersion, setEditorVersion] = useState(0)
     const editingDisabled = saving || signingOut || cleaning || !!authNotice
-    const onSortingChange = useCallback((active: boolean) => {
-        sortingRef.current = active
-        setSorting(active)
-    }, [])
 
     useEffect(() => {
         onLeaveGuardChange(() => isEditorDirty(leaveState.current.baseline, leaveState.current.draft)
-            || savingRef.current || cleaningRef.current || sortingRef.current)
+            || savingRef.current || cleaningRef.current || sortLock.getOwner() !== null)
         return () => onLeaveGuardChange(null)
-    }, [onLeaveGuardChange])
+    }, [onLeaveGuardChange, sortLock])
 
     useEffect(() => {
         mounted.current = true
@@ -133,7 +130,7 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
     }
 
     function reload() {
-        if (savingRef.current || sortingRef.current || cleaning || authNotice || !canWrite()) return
+        if (savingRef.current || sortLock.getOwner() !== null || cleaning || authNotice || !canWrite()) return
         setLoading(true)
         setLoadError(null)
         setSaveError(null)
@@ -147,7 +144,7 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
 
     async function save(event: SubmitEvent<HTMLFormElement>) {
         event.preventDefault()
-        if (!form.current || !draft || !baseline || savingRef.current || sortingRef.current || signingOut || cleaning || authNotice || !canWrite()) return
+        if (!form.current || !draft || !baseline || savingRef.current || sortLock.getOwner() !== null || signingOut || cleaning || authNotice || !canWrite()) return
 
         const themeFields = form.current.querySelectorAll<HTMLInputElement>('[data-theme]')
         for (const field of themeFields) {
@@ -198,7 +195,7 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
     }
 
     async function retryCleanup() {
-        if (cleaningRef.current || savingRef.current || sortingRef.current || authNotice || !canWrite()) return
+        if (cleaningRef.current || savingRef.current || sortLock.getOwner() !== null || authNotice || !canWrite()) return
         cleaningRef.current = true
         setCleaning(true)
         try {
@@ -245,7 +242,8 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
                                 className="flexColumn gapLg"
                                 getLabel={section => section.title || '제목 없는 섹션'}
                                 onChange={sections => change({ ...draft, sections })}
-                                onSortingChange={onSortingChange}
+                                listId="sections"
+                                sortLock={sortLock}
                                 disabled={editingDisabled}
                             >
                                 {(section, handleProps) => (
@@ -287,7 +285,7 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
                                 }}
                             />
                         </div>
-                        <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} onSortingChange={onSortingChange} />
+                        <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} sortLock={sortLock} />
                         <button className="btn h30 border borderRad widthFull" type="submit" disabled={sorting}>{saving ? '저장 중…' : '저장'}</button>
                     </fieldset>
                     {saved && <p role="status">저장 성공</p>}

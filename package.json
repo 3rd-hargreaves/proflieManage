@@ -8,7 +8,8 @@
         "build": "tsc -b && vite build",
         "lint": "oxlint",
         "test:format": "node --experimental-strip-types --test tests/sectionFormat.test.ts",
-        "test:editor": "node --experimental-strip-types --test tests/editorDirty.test.ts",
+        "test:editor": "node --experimental-strip-types --test tests/editorDirty.test.ts tests/sortLock.test.ts",
+        "test:editor:browser": "node tests/editor.browser.mjs",
         "preview": "vite preview"
     },
     "dependencies": {

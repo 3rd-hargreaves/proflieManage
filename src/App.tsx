@@ -107,7 +107,7 @@ export default function App() {
         if (!user) throw new Error('관리자 로그인 상태를 다시 확인해 주세요.')
         setReauthOpen(false)
         setLogoutError(null)
-        navigate('/edit')
+        if (!isEditorPath(getCurrentPath())) navigate('/edit')
     }
 
     async function logout() {

@@ -1,26 +1,30 @@
 import { useRef, useState } from 'react'
 import type { FeedDraft } from '../types/site'
 import SortableList from './SortableList'
+import type { SortLock } from '../utils/sortLock'
 
 interface FeedEditorProps {
     value: FeedDraft[]
     onChange: (value: FeedDraft[]) => void
     disabled: boolean
     sorting: boolean
-    onSortingChange: (sorting: boolean) => void
+    onSortingChange?: (sorting: boolean) => void
+    sortLock?: SortLock
 }
 
-export default function FeedEditor({ value, onChange, disabled, sorting, onSortingChange }: FeedEditorProps) {
+export default function FeedEditor({ value, onChange, disabled, sorting, onSortingChange, sortLock }: FeedEditorProps) {
     const fileInput = useRef<HTMLInputElement>(null)
     const [selectedNames, setSelectedNames] = useState('파일 제목')
 
     return (
         <div className="card widthFull pdLg flexColumn gapSm">
             <p className="widthFull text2 mainColorText bold">피드</p>
-            <p className="text3">파일 제목 행을 드래그해 순서를 바꾸고 저장해 주세요.</p>
+            <p className="text3"> 드래그로 순서 변경</p>
             <div id="feedItems" className="widthFull flexColumn gapSm">
                 <SortableList
                     items={value}
+                    listId="feed"
+                    sortLock={sortLock}
                     label="피드 순서"
                     className="flexColumn gapSm"
                     getLabel={item => item.name}

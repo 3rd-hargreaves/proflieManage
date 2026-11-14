@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { validateRequired } from '../utils/validation'
 import { authConfigurationError } from '../lib/supabase'
@@ -12,37 +12,59 @@ interface LoginModalProps {
 }
 
 export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginModalProps) {
+    if (!isOpen) return null
+    return <OpenLoginModal onClose={onClose} onLoginSuccess={onLoginSuccess} />
+}
+
+function OpenLoginModal({ onClose, onLoginSuccess }: Omit<LoginModalProps, 'isOpen'>) {
     const [password, setPassword] = useState('')
     const [pending, setPending] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const passwordRef = useRef<HTMLInputElement>(null)
     const submitting = useRef(false)
+    const mounted = useRef(true)
+    const generation = useRef(0)
+
+    useEffect(() => {
+        mounted.current = true
+        return () => {
+            mounted.current = false
+        }
+    }, [])
+
+    const close = useCallback(() => {
+        if (!submitting.current) onClose()
+    }, [onClose])
 
     async function login(event: FormEvent<HTMLFormElement>) {
         event.preventDefault()
-        if (submitting.current || !validateRequired(passwordRef.current!)) return
+        if (submitting.current || !passwordRef.current || !validateRequired(passwordRef.current)) return
         setError(null)
         if (authConfigurationError) return
 
         submitting.current = true
         setPending(true)
+        const request = ++generation.current
+        const isCurrent = () => mounted.current && generation.current === request
         try {
-            await signIn(password)
-            await onLoginSuccess()
+            const signingIn = signIn(password)
             setPassword('')
+            await signingIn
+            if (!isCurrent()) return
+            await onLoginSuccess()
         } catch (error) {
-            setError(error instanceof Error ? error.message : '로그인하지 못했습니다. 다시 시도해 주세요.')
+            if (isCurrent()) {
+                setError(error instanceof Error ? error.message : '로그인하지 못했습니다. 다시 시도해 주세요.')
+            }
         } finally {
             submitting.current = false
-            setPending(false)
+            if (isCurrent()) setPending(false)
         }
     }
 
-    if (!isOpen) return null
-
     return (
-        <Modal id="loginModal" label="관리자 로그인" onClose={onClose}>
-            <form className="modal card pdLg flexColumn gapSm" noValidate onSubmit={login}>
+        <Modal id="loginModal" label="관리자 로그인" onClose={close}>
+            <form className="modal card pdLg flexColumn gapSm" noValidate onSubmit={login} aria-busy={pending}>
                 <input
                     ref={passwordRef}
                     className="widthFull h30 pdSide border borderRad"
