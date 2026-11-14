@@ -3,6 +3,7 @@
 -- 다른 프로젝트에서 실행할 때에는 해당 프로젝트 관리자의 UUID로 변경한다.
 -- 동일한 스키마에 재실행해도 기존 콘텐츠를 초기값으로 덮어쓰지 않는다.
 -- 참고 문서 https://supabase.com/docs/guides/database/postgres/row-level-security
+-- 수정 페이지의 일괄 저장 RPC와 이미지 쓰기 정책은 이후 save.sql을 실행해 추가한다.
 
 begin;
 

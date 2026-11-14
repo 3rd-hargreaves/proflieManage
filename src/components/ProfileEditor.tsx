@@ -1,5 +1,8 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ProfileDraft } from '../types/site'
+import { imageFileName } from '../services/save'
+import { getImageUrl } from '../services/storage'
+import SiteImage from './SiteImage'
 
 interface ProfileEditorProps {
   value: ProfileDraft
@@ -8,12 +11,24 @@ interface ProfileEditorProps {
 
 export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
   const fileInput = useRef<HTMLInputElement>(null)
+  const [preview, setPreview] = useState<{ file: File, url: string } | null>(null)
+  const fileName = value.file?.name ?? (value.imagePath ? imageFileName(value.imagePath) : '파일 제목')
+
+  useEffect(() => {
+    return () => { if (preview) URL.revokeObjectURL(preview.url) }
+  }, [preview])
 
   return (
     <div className="card pdLg flexColumn alignCenter gapMd">
       <p className="widthFull text2 mainColorText bold">정보</p>
+      <SiteImage
+        className="profileImg"
+        src={value.file ? (preview?.file === value.file ? preview.url : undefined) : getImageUrl(value.imagePath)}
+        alt="프로필 이미지 미리보기"
+        fallbackText={value.file || value.imagePath ? undefined : '이미지 없음'}
+      />
       <div className="picUploader gapSm widthFull">
-        <div className="picTitle h30 pdSide border borderRad line" title={value.file?.name}>{value.file?.name ?? '파일 제목'}</div>
+        <div className="picTitle h30 pdSide border borderRad line" title={fileName}>{fileName}</div>
         <button className="btn h30 border borderRad" type="button" onClick={() => fileInput.current?.click()}>
           이미지 업로드
         </button>
@@ -25,7 +40,11 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
           accept=".jpg, .jpeg, .png"
           onChange={(event) => {
             const file = event.currentTarget.files?.[0]
-            if (file) onChange({ ...value, file })
+            if (file) {
+              setPreview({ file, url: URL.createObjectURL(file) })
+              onChange({ ...value, file })
+            }
+            event.currentTarget.value = ''
           }}
         />
       </div>
