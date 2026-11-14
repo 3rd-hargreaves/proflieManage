@@ -26,7 +26,7 @@ export default function ThemeEditor({ value, onChange }: ThemeEditorProps) {
             aria-hidden="true"
           />
           <input
-            className="widthFull h30 pdSide border"
+            className="widthFull h30 pdSide border borderRad"
             type="text"
             placeholder="헥스코드"
             aria-label={`${label} 헥스코드`}

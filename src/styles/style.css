@@ -263,10 +263,10 @@ textarea { height: 200px; padding: var(--px-sm); }
     top: -1px;
     right: -1px;
 }
-.picEditItem > span
+.feedDragHandle .dragLabel
 {
     display: block;
-    margin-right: 40px;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -275,3 +275,36 @@ textarea { height: 200px; padding: var(--px-sm); }
 /* 수정 화면 */
 .editorFields { border: 0; min-width: 0; }
 button:disabled { cursor: default; opacity: 0.6; }
+
+/* 드래그 정렬 */
+.sortableList, .sortableItem { min-width: 0; }
+.sortableItem { position: relative; }
+.sortableDragging { z-index: 10; opacity: 0.85; }
+.sortableDragging > .card, .sortableDragging > .picEditItem
+{
+    outline: 2px solid var(--main-color);
+    outline-offset: 2px;
+}
+.dragHandle
+{
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.dragHandle > span { color: inherit; }
+.feedDragHandle:focus-visible { outline: 2px solid var(--main-color); outline-offset: 2px; }
+.sortableDragging .dragHandle { cursor: grabbing; }
+.feedDragHandle
+{
+    display: flex;
+    align-items: center;
+    gap: var(--px-sm);
+    width: calc(100% - 42px);
+    height: 28px;
+    border: 0;
+    justify-content: flex-start;
+    background-color: transparent;
+    font-size: 16px;
+    text-align: left;
+    cursor: grab;
+}

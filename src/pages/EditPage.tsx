@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SubmitEvent } from 'react'
 import FeedEditor from '../components/FeedEditor'
 import ProfileEditor from '../components/ProfileEditor'
 import SectionEditor from '../components/SectionEditor'
 import ThemeEditor from '../components/ThemeEditor'
+import SortableList from '../components/SortableList'
 import { loadSite } from '../services/site'
 import { getPendingImageCleanupCount, imageFileName, retryImageCleanup, saveSite } from '../services/save'
 import type { SiteData, SiteEditDraft } from '../types/site'
@@ -43,6 +44,7 @@ interface EditPageProps {
 export default function EditPage({ onLogout, signingOut, logoutError }: EditPageProps) {
   const form = useRef<HTMLFormElement>(null)
   const savingRef = useRef(false)
+  const sortingRef = useRef(false)
   const mounted = useRef(true)
   const [baseline, setBaseline] = useState<SiteData | null>(null)
   const [draft, setDraft] = useState<SiteEditDraft | null>(null)
@@ -51,11 +53,17 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
   const [loadError, setLoadError] = useState<string | null>(null)
   const [focusedSection, setFocusedSection] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [sorting, setSorting] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [cleanupWarning, setCleanupWarning] = useState<string | null>(null)
   const [cleaning, setCleaning] = useState(false)
   const [editorVersion, setEditorVersion] = useState(0)
+  const editingDisabled = saving || signingOut || cleaning
+  const onSortingChange = useCallback((active: boolean) => {
+    sortingRef.current = active
+    setSorting(active)
+  }, [])
 
   useEffect(() => {
     mounted.current = true
@@ -106,7 +114,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
   }
 
   function reload() {
-    if (savingRef.current || cleaning) return
+    if (savingRef.current || sortingRef.current || cleaning) return
     setLoading(true)
     setLoadError(null)
     setSaveError(null)
@@ -119,7 +127,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
 
   async function save(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!form.current || !draft || !baseline || savingRef.current || signingOut || cleaning) return
+    if (!form.current || !draft || !baseline || savingRef.current || sortingRef.current || signingOut || cleaning) return
 
     const themeFields = form.current.querySelectorAll<HTMLInputElement>('[data-theme]')
     for (const field of themeFields) {
@@ -182,7 +190,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
 
   return (
     <main className="flexColumn gapLg" aria-busy={loading || saving}>
-      <button className="btn h30 border borderRad" type="button" disabled={signingOut || saving || cleaning} onClick={onLogout}>
+      <button className="btn h30 border borderRad" type="button" disabled={editingDisabled || sorting} onClick={onLogout}>
         {signingOut ? '로그아웃 중…' : '로그아웃'}
       </button>
       {logoutError && <p role="alert">{logoutError}</p>}
@@ -195,23 +203,36 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
       )}
       {draft && !loading && (
         <form ref={form} className="flexColumn gapLg" noValidate onSubmit={save}>
-          <fieldset className="editorFields flexColumn gapLg" disabled={saving || signingOut || cleaning} key={editorVersion}>
+          <fieldset className="editorFields flexColumn gapLg" disabled={editingDisabled} key={editorVersion}>
             <ThemeEditor value={draft.theme} onChange={(key, value) => change({ ...draft, theme: { ...draft.theme, [key]: value } })} />
             <ProfileEditor value={draft.profile} onChange={profile => change({ ...draft, profile })} />
             <div id="sections" className="widthFull flexColumn gapLg">
-              {draft.sections.map(section => (
-                <SectionEditor
-                  key={section.id}
-                  value={section}
-                  autoFocus={section.id === focusedSection}
-                  onChange={value => change({ ...draft, sections: draft.sections.map(item => item.id === value.id ? value : item) })}
-                  onDelete={() => change({ ...draft, sections: draft.sections.filter(item => item.id !== section.id) })}
-                />
-              ))}
+              <p className="text3">↕ 순서 이동 버튼을 드래그해 순서 이동</p>
+              <SortableList
+                items={draft.sections}
+                label="섹션 순서"
+                className="flexColumn gapLg"
+                getLabel={section => section.title || '제목 없는 섹션'}
+                onChange={sections => change({ ...draft, sections })}
+                onSortingChange={onSortingChange}
+                disabled={editingDisabled}
+              >
+                {(section, handleProps) => (
+                  <SectionEditor
+                    value={section}
+                    autoFocus={section.id === focusedSection}
+                    dragHandle={<button {...handleProps} className="btn dragHandle h30 widthFull border borderRad pdSide"><span aria-hidden="true">↕</span> 순서 이동</button>}
+                    sorting={sorting}
+                    onChange={value => change({ ...draft, sections: draft.sections.map(item => item.id === value.id ? value : item) })}
+                    onDelete={() => change({ ...draft, sections: draft.sections.filter(item => item.id !== section.id) })}
+                  />
+                )}
+              </SortableList>
               <button
                 id="addSectionBtn"
                 className="btn h30 border borderRad"
                 type="button"
+                disabled={sorting}
                 onClick={() => {
                   const id = crypto.randomUUID()
                   change({ ...draft, sections: [...draft.sections, { id, title: '', content: '' }] })
@@ -224,7 +245,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
               <p className="text3"> ,로 구분 </p>
               <input
                 id="keywords"
-                className="widthFull h30 pdSide border"
+                className="widthFull h30 pdSide border borderRad"
                 type="text"
                 placeholder="키워드"
                 aria-label="키워드"
@@ -235,14 +256,14 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
                 }}
               />
             </div>
-            <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} />
-            <button className="btn h30 border borderRad widthFull" type="submit">{saving ? '저장 중…' : '저장'}</button>
+            <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} onSortingChange={onSortingChange} />
+            <button className="btn h30 border borderRad widthFull" type="submit" disabled={sorting}>{saving ? '저장 중…' : '저장'}</button>
           </fieldset>
           {saved && <p role="status">저장했습니다.</p>}
           {saveError && (
             <div className="card pdLg flexColumn gapSm">
               <p role="alert">{saveError}</p>
-              <button className="btn border borderRad pdSm" type="button" disabled={saving || cleaning} onClick={reload}>
+              <button className="btn border borderRad pdSm" type="button" disabled={editingDisabled || sorting} onClick={reload}>
                 편집 내용을 버리고 DB에서 다시 불러오기
               </button>
             </div>
@@ -251,7 +272,7 @@ export default function EditPage({ onLogout, signingOut, logoutError }: EditPage
             <div className="card pdLg flexColumn gapSm">
               <p role="status">{cleanupWarning}</p>
               {getPendingImageCleanupCount() > 0 && (
-                <button className="btn h30 border borderRad" type="button" disabled={cleaning || saving} onClick={retryCleanup}>
+                <button className="btn h30 border borderRad" type="button" disabled={editingDisabled || sorting} onClick={retryCleanup}>
                   {cleaning ? '이미지 정리 중…' : '이미지 정리 다시 시도'}
                 </button>
               )}
