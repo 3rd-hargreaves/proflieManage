@@ -190,6 +190,11 @@ begin
         public.feed_images in share row exclusive mode;
 
     v_current := private.site_snapshot();
+    -- 잠금 안에서 실제 저장 개수와 비교한다. 기존 초과 목록은 보존·감축할 수 있다.
+    if jsonb_array_length(p_data -> 'feed') > greatest(50, jsonb_array_length(v_current -> 'feed')) then
+        raise exception using errcode = '22023', message = 'site_feed_limit_exceeded';
+    end if;
+
     -- 같은 내용의 기존 행도 ID 순서가 바뀌면 실제로 저장해야 한다.
     -- null ID는 기대 스냅샷이 달라진 응답 유실 재시도에서만 발급된 ID와 일치할 수 있다.
     -- 최신 스냅샷에서 요청한 null ID는 같은 내용이라도 새 행으로 저장한다.

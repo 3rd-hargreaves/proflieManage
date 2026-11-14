@@ -1,0 +1,24 @@
+{
+    "$schema": "https://openapi.vercel.sh/vercel.json",
+    "headers": [
+        {
+            "source": "/(.*)",
+            "headers": [
+                {
+                    "key": "Content-Security-Policy",
+                    "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://nvunhhyxbbjqgzdhodrw.supabase.co; connect-src 'self' https://nvunhhyxbbjqgzdhodrw.supabase.co; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+                },
+                { "key": "X-Content-Type-Options", "value": "nosniff" },
+                { "key": "X-Frame-Options", "value": "DENY" },
+                { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+                { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
+            ]
+        }
+    ],
+    "rewrites": [
+        { "source": "/edit", "destination": "/index.html" },
+        { "source": "/edit/", "destination": "/index.html" },
+        { "source": "/manage.html", "destination": "/index.html" },
+        { "source": "/manage.html/", "destination": "/index.html" }
+    ]
+}
