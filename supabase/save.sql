@@ -190,7 +190,20 @@ begin
         public.feed_images in share row exclusive mode;
 
     v_current := private.site_snapshot();
-    v_same_content := private.site_content(v_current) = private.site_content(p_data);
+    -- 같은 내용의 기존 행도 ID 순서가 바뀌면 실제로 저장해야 한다.
+    -- null ID는 기대 스냅샷이 달라진 응답 유실 재시도에서만 발급된 ID와 일치할 수 있다.
+    -- 최신 스냅샷에서 요청한 null ID는 같은 내용이라도 새 행으로 저장한다.
+    v_same_content := private.site_content(v_current) = private.site_content(p_data)
+        and not exists (
+            select 1
+            from unnest(array['sections', 'keywords', 'feed']) as lists(name)
+            cross join lateral jsonb_array_elements(p_data -> lists.name)
+                with ordinality as items(value, position)
+            where (items.value ->> 'id' is null and v_current = p_expected)
+                or (items.value ->> 'id' is not null
+                    and items.value -> 'id' is distinct from
+                        v_current -> lists.name -> ((items.position - 1)::integer) -> 'id')
+        );
     if v_current is distinct from p_expected and not v_same_content then
         raise exception using errcode = 'P0001', message = 'site_conflict';
     end if;

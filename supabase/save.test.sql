@@ -51,6 +51,9 @@ declare
     v_swapped jsonb;
     v_replaced jsonb;
     v_empty jsonb;
+    v_duplicate_payload jsonb;
+    v_duplicates jsonb;
+    v_duplicate_swapped jsonb;
     v_bad jsonb;
     v_bad_cases jsonb;
     v_list text;
@@ -174,6 +177,70 @@ begin
     then raise exception 'Empty lists/image removal/replay failed'; end if;
     set constraints all immediate;
 
+    -- Identical text or image paths still represent distinct existing rows.
+    -- Reordering their IDs must update sort_order instead of becoming a no-op.
+    v_duplicate_payload := v_seed;
+    foreach v_list in array array['sections', 'keywords', 'feed'] loop
+        v_duplicate_payload := jsonb_set(v_duplicate_payload, array[v_list],
+            jsonb_build_array(v_seed -> v_list -> 0, v_seed -> v_list -> 0));
+    end loop;
+    v_duplicates := public.save_site(v_empty, v_duplicate_payload);
+    if public.save_site(v_empty, v_duplicate_payload) is distinct from v_duplicates
+    then raise exception 'Identical new-null-ID rows replay failed'; end if;
+    set constraints all immediate;
+
+    v_bad := v_duplicate_payload;
+    foreach v_list in array array['sections', 'keywords', 'feed'] loop
+        v_bad := jsonb_set(v_bad, array[v_list], jsonb_build_array(
+            (v_duplicates -> v_list -> 0) - 'sort_order',
+            (v_duplicates -> v_list -> 1) - 'sort_order'
+        ));
+        v_duplicate_payload := jsonb_set(v_duplicate_payload, array[v_list], jsonb_build_array(
+            (v_duplicates -> v_list -> 1) - 'sort_order',
+            (v_duplicates -> v_list -> 0) - 'sort_order'
+        ));
+    end loop;
+    v_duplicate_swapped := public.save_site(v_duplicates, v_duplicate_payload);
+    foreach v_list in array array['sections', 'keywords', 'feed'] loop
+        if v_duplicate_swapped #> array[v_list, '0', 'id'] is distinct from v_duplicates #> array[v_list, '1', 'id']
+            or v_duplicate_swapped #> array[v_list, '1', 'id'] is distinct from v_duplicates #> array[v_list, '0', 'id']
+            or v_duplicate_swapped #>> array[v_list, '0', 'sort_order'] <> '1'
+            or v_duplicate_swapped #>> array[v_list, '1', 'sort_order'] <> '2'
+        then raise exception 'Identical-content ID swap failed: %', v_list; end if;
+    end loop;
+    if public.save_site(v_duplicates, v_duplicate_payload) is distinct from v_duplicate_swapped
+    then raise exception 'Identical-content swapped request replay failed'; end if;
+    begin
+        perform public.save_site(v_duplicates, v_bad);
+        raise exception 'Stale identical-content ID order accepted';
+    exception when raise_exception then
+        if sqlerrm <> 'site_conflict' then raise; end if;
+    end;
+    if private.site_snapshot() is distinct from v_duplicate_swapped
+    then raise exception 'Stale identical-content order changed data'; end if;
+    set constraints all immediate;
+
+    -- A fresh delete-and-add of identical content must allocate a new ID.
+    -- Replaying its lost response must then reuse that newly allocated ID.
+    foreach v_list in array array['sections', 'keywords', 'feed'] loop
+        v_duplicate_payload := jsonb_set(v_duplicate_payload,
+            array[v_list, '0', 'id'], 'null'::jsonb);
+    end loop;
+    v_result := public.save_site(v_duplicate_swapped, v_duplicate_payload);
+    foreach v_list in array array['sections', 'keywords', 'feed'] loop
+        if v_result #> array[v_list, '0', 'id'] = v_duplicate_swapped #> array[v_list, '0', 'id']
+            or v_result #> array[v_list, '1', 'id'] is distinct from v_duplicate_swapped #> array[v_list, '1', 'id']
+        then raise exception 'Fresh identical-content null-ID replacement failed: %', v_list; end if;
+    end loop;
+    if public.save_site(v_duplicate_swapped, v_duplicate_payload) is distinct from v_result
+    then raise exception 'Identical-content replacement request replay failed'; end if;
+    set constraints all immediate;
+
+    v_result := public.save_site(v_result, v_payload);
+    if v_result is distinct from v_empty
+    then raise exception 'Identical-content test did not restore empty snapshot'; end if;
+    set constraints all immediate;
+
     perform set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-000000000001', true);
     perform set_config('request.jwt.claims', '{"sub":"00000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
     if private.is_site_admin() then raise exception 'Nonadmin recognized as admin'; end if;
@@ -195,5 +262,5 @@ begin
 end;
 $$;
 reset role;
-select 'PASS: admin save, IDs, reorder/new/delete, replay, stale conflict, malformed/no-op, atomic rollback, empty lists, anon/nonadmin denied, Storage policies' as sql_check;
+select 'PASS: admin save, IDs, reorder/new/delete, identical-content ID reorder, replay, stale conflict, malformed/no-op, atomic rollback, empty lists, anon/nonadmin denied, Storage policies' as sql_check;
 rollback;

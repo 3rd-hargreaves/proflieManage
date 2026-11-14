@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import MainPage from './pages/MainPage'
-import EditPage from './pages/EditPage'
 import { authConfigurationError, supabase } from './lib/supabase'
 import { getAdminUser, signOut } from './services/auth'
+
+const EditPage = lazy(() => import('./pages/EditPage'))
 
 interface AuthState {
   user: User | null
@@ -120,7 +121,11 @@ export default function App() {
     )
   }
 
-  return <EditPage onLogout={logout} signingOut={signingOut} logoutError={logoutError} />
+  return (
+    <Suspense fallback={<main><p className="card pdLg text3" role="status">수정 화면을 불러오는 중…</p></main>}>
+      <EditPage onLogout={logout} signingOut={signingOut} logoutError={logoutError} />
+    </Suspense>
+  )
 }
 
 function errorMessage(error: unknown): string {
