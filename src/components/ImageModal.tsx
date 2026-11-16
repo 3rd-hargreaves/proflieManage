@@ -11,8 +11,7 @@ export default function ImageModal({ image, onClose }: ImageModalProps) {
     return (
         <Modal id="imgModal" label="이미지 확대" onClose={onClose}>
             <div className="modal flexColumn alignCenter gapSm">
-                <SiteImage className="imgModal" src={image.src} alt={image.alt} />
-
+                <SiteImage className="imgModal widthFull" src={image.src} alt={image.alt} />
             </div>
         </Modal>
     )

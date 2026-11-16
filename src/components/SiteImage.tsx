@@ -17,7 +17,7 @@ export default function SiteImage({
 
     if (!src || failedSource === src) {
         return (
-            <span className={`${className || ''} imagePlaceholder`} role="img" aria-label={`${alt}. ${fallbackText}`}>
+            <span className={`${className || ''} imagePlaceholder flex alignCenter justifyCenter pdSm textCenter`} role="img" aria-label={`${alt}. ${fallbackText}`}>
                 {fallbackText}
             </span>
         )

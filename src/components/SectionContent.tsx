@@ -31,13 +31,13 @@ export default function SectionContent({ content, label }: SectionContentProps) 
                 const rows = block.hasHeader ? body : block.rows
                 return (
                     <div key={index} className="sectionTableWrap border borderRad" role="region" tabIndex={0} aria-label={`${label} 표 영역`}>
-                        <table className="sectionTable" aria-label={`${label} 표`}>
+                        <table className="sectionTable widthFull" aria-label={`${label} 표`}>
                             {block.hasHeader && (
-                                <thead><tr>{header.map((cell, column) => <th key={column} scope="col">{renderInline(cell)}</th>)}</tr></thead>
+                                <thead><tr>{header.map((cell, column) => <th key={column} className="border mainColorText" scope="col">{renderInline(cell)}</th>)}</tr></thead>
                             )}
                             <tbody>
                                 {rows.map((row, rowIndex) => (
-                                    <tr key={rowIndex}>{row.map((cell, column) => <td key={column}>{renderInline(cell)}</td>)}</tr>
+                                    <tr key={rowIndex}>{row.map((cell, column) => <td key={column} className="border">{renderInline(cell)}</td>)}</tr>
                                 ))}
                             </tbody>
                         </table>

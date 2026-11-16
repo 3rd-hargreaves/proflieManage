@@ -3,8 +3,6 @@ import { validateImageUpload } from '../utils/uploadLimits'
 import { createCleanupJournal, isCleanupPath } from '../utils/cleanupJournal'
 import { isCharacterId } from '../utils/siteData'
 
-export { imageFileName } from '../utils/imageFileName'
-
 const imageBucket = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET?.trim() || 'site-images'
 
 type ImageFolder = 'profile' | 'feed'

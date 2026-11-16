@@ -10,12 +10,11 @@ interface FeedEditorProps {
     onChange: (value: FeedDraft[]) => void
     disabled: boolean
     sorting: boolean
-    onSortingChange?: (sorting: boolean) => void
     sortLock?: SortLock
     maxCount?: number
 }
 
-export default function FeedEditor({ value, onChange, disabled, sorting, onSortingChange, sortLock, maxCount = MAX_FEED_IMAGES }: FeedEditorProps) {
+export default function FeedEditor({ value, onChange, disabled, sorting, sortLock, maxCount = MAX_FEED_IMAGES }: FeedEditorProps) {
     const fileInput = useRef<HTMLInputElement>(null)
     const [selectedNames, setSelectedNames] = useState('파일 제목')
     const [imageError, setImageError] = useState<string | null>(null)
@@ -34,12 +33,11 @@ export default function FeedEditor({ value, onChange, disabled, sorting, onSorti
                     className="flexColumn gapSm"
                     getLabel={item => item.name}
                     onChange={onChange}
-                    onSortingChange={onSortingChange}
                     disabled={disabled}
                 >
                     {(item, handleProps) => (
                         <div className="picEditItem h30 widthFull pdSide border borderRad line">
-                            <button {...handleProps} className="dragHandle feedDragHandle">
+                            <button {...handleProps} className="dragHandle feedDragHandle flex alignCenter gapSm">
                                 <span aria-hidden="true">↕</span>
                                 <span className="dragLabel" title={item.name}>{item.name}</span>
                             </button>
@@ -55,7 +53,7 @@ export default function FeedEditor({ value, onChange, disabled, sorting, onSorti
                     )}
                 </SortableList>
             </div>
-            <div className="picUploader gapSm widthFull">
+            <div className="picUploader flex gapSm widthFull">
                 <div className="picTitle h30 pdSide border borderRad line" title={selectedNames}>{selectedNames}</div>
                 <button className="btn h30 border borderRad" type="button" disabled={sorting} onClick={() => fileInput.current?.click()}>
                     이미지 업로드

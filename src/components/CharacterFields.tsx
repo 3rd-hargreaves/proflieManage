@@ -16,10 +16,9 @@ interface CharacterFieldsProps {
     editingDisabled: boolean
     maxFeedCount: number
     saving?: boolean
-    saveDisabled?: boolean
 }
 
-export default function CharacterFields({ draft, change, addSection, focusedSection, sorting, sortLock, editingDisabled, maxFeedCount, saving = false, saveDisabled = false }: CharacterFieldsProps) {
+export default function CharacterFields({ draft, change, addSection, focusedSection, sorting, sortLock, editingDisabled, maxFeedCount, saving = false }: CharacterFieldsProps) {
     return (
         <>
             <ThemeEditor value={draft.theme} onChange={(key, value) => change({ ...draft, theme: { ...draft.theme, [key]: value } })} />
@@ -72,7 +71,7 @@ export default function CharacterFields({ draft, change, addSection, focusedSect
                 />
             </div>
             <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} sortLock={sortLock} maxCount={maxFeedCount} />
-            <button className="btn h30 border borderRad widthFull" type="submit" disabled={sorting || saveDisabled}>{saving ? '저장 중…' : '저장'}</button>
+            <button className="btn h30 border borderRad widthFull" type="submit" disabled={sorting}>{saving ? '저장 중…' : '저장'}</button>
         </>
     )
 }

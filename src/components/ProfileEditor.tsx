@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ProfileDraft } from '../types/site'
-import { imageFileName } from '../services/save'
+import { imageFileName } from '../utils/imageFileName'
 import { getImageUrl, validateImageFile } from '../services/storage'
 import { imageUploadHint } from '../utils/uploadLimits'
 import SiteImage from './SiteImage'
@@ -30,7 +30,7 @@ export default function ProfileEditor({ value, onChange }: ProfileEditorProps) {
                 alt="프로필 이미지 미리보기"
                 fallbackText={value.file || value.imagePath ? undefined : '이미지 없음'}
             />
-            <div className="picUploader gapSm widthFull">
+            <div className="picUploader flex gapSm widthFull">
                 <div className="picTitle h30 pdSide border borderRad line" title={fileName}>{fileName}</div>
                 <button className="btn h30 border borderRad" type="button" onClick={() => fileInput.current?.click()}>
                     이미지 업로드

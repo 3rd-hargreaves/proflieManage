@@ -31,7 +31,6 @@ interface SortableListProps<Item extends SortableEntry> {
     canActivate?: () => boolean
     getLabel: (item: Item) => string
     onChange: (items: Item[]) => void
-    onSortingChange?: (sorting: boolean) => void
     children: (item: Item, handleProps: SortHandleProps) => ReactNode
 }
 
@@ -86,7 +85,7 @@ function SortableItem({
 }
 
 export default function SortableList<Item extends SortableEntry>({
-    items, label, className = '', disabled = false, listId: suppliedListId, sortLock, canActivate, getLabel, onChange, onSortingChange, children,
+    items, label, className = '', disabled = false, listId: suppliedListId, sortLock, canActivate, getLabel, onChange, children,
 }: SortableListProps<Item>) {
     const contextId = useId()
     const listId = suppliedListId ?? contextId
@@ -95,16 +94,13 @@ export default function SortableList<Item extends SortableEntry>({
     const owner = useSyncExternalStore(lock.subscribe, lock.getOwner, lock.getOwner)
     const blockedByOtherList = owner !== null && owner !== listId
     const phase = useRef<'pending' | 'active' | null>(null)
-    const notifySorting = useRef(onSortingChange)
-    useEffect(() => { notifySorting.current = onSortingChange }, [onSortingChange])
     const container = useRef<HTMLDivElement>(null)
     const pointerId = useRef<number | null>(null)
     const releasedPointer = useRef<{ x: number, y: number } | null>(null)
-    const allowedDrop = useRef(true)
     const release = useCallback(() => {
         phase.current = null
         pointerId.current = null
-        if (lock.end(listId)) notifySorting.current?.(false)
+        lock.end(listId)
     }, [lock, listId])
     const cancel = useCallback(() => {
         if (phase.current !== null && lock.getOwner() === listId) {
@@ -113,7 +109,6 @@ export default function SortableList<Item extends SortableEntry>({
             // blank avoids also triggering the modal's Escape-close handler.
             document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', cancelable: true }))
         }
-        allowedDrop.current = false
         release()
     }, [lock, listId, release])
     useEffect(() => () => cancel(), [cancel])
@@ -127,7 +122,6 @@ export default function SortableList<Item extends SortableEntry>({
         phase.current = 'pending'
         pointerId.current = event instanceof PointerEvent ? event.pointerId : null
         releasedPointer.current = null
-        notifySorting.current?.(true)
         return true
     }
     useEffect(() => {
@@ -160,8 +154,8 @@ export default function SortableList<Item extends SortableEntry>({
     function finish({ active, over }: DragEndEvent) {
         const pointerInside = pointerId.current === null
             || (releasedPointer.current !== null && isInside(releasedPointer.current))
-        allowedDrop.current = phase.current === 'active' && lock.getOwner() === listId && !disabled && !!over && pointerInside
-        if (allowedDrop.current && over && active.id !== over.id) {
+        const allowedDrop = phase.current === 'active' && lock.getOwner() === listId && !disabled && !!over && pointerInside
+        if (allowedDrop && over && active.id !== over.id) {
             const from = items.findIndex(item => item.id === active.id)
             const to = items.findIndex(item => item.id === over.id)
             if (from >= 0 && to >= 0) onChange(arrayMove(items, from, to))
@@ -186,14 +180,10 @@ export default function SortableList<Item extends SortableEntry>({
                 phase.current = 'active'
                 pointerId.current = activatorEvent instanceof PointerEvent ? activatorEvent.pointerId : null
                 releasedPointer.current = null
-                allowedDrop.current = true
             }}
             onDragAbort={release}
             onDragEnd={finish}
-            onDragCancel={() => {
-                allowedDrop.current = false
-                release()
-            }}
+            onDragCancel={release}
         >
             <SortableContext items={items} strategy={verticalListSortingStrategy} disabled={disabled || blockedByOtherList}>
                 <div ref={container} className={`sortableList ${className}`} role="list" aria-label={label}>

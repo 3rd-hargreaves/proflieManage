@@ -6,7 +6,7 @@ import { isCharacterId, isSiteData } from '../utils/siteData'
 import { isCleanupPath } from '../utils/cleanupJournal'
 import { imageCleanupWarning, queueImageCleanup, retryImageCleanup, uploadImage, validateImageFile } from './storage'
 
-export { getPendingImageCleanupCount, imageCleanupWarning, imageFileName, retryImageCleanup } from './storage'
+export { getPendingImageCleanupCount } from './storage'
 export interface SaveResult { site: SiteData, cleanupWarning: string | null }
 type WriteGuard = () => boolean
 const allowed = () => true

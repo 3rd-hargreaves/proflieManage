@@ -122,7 +122,6 @@ export function useSiteEditor({ characterId, signingOut, authBlocked, canWrite, 
     return {
         baseline,
         draft,
-        dirty: isEditorDirty(baseline, draft),
         loading: query.status === 'loading',
         loadError: query.status === 'error' ? query.message : null,
         notFound: query.status === 'ready' && query.data === null,
