@@ -5,22 +5,10 @@ import path from 'node:path'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, pause } from './helpers/browser.mjs'
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const phase = 6
-async function findChrome() {
-    const candidates = process.env.CHROME_PATH ? [process.env.CHROME_PATH] : process.platform === 'win32'
-        ? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe')]
-        : process.platform === 'darwin'
-            ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']
-            : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/opt/google/chrome/chrome']
-    for (const candidate of candidates) {
-        try { await fs.access(candidate); return candidate } catch {}
-    }
-    throw new Error('Chrome/Chromium executable not found. Set CHROME_PATH to its installed executable.')
-}
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
-const fetchJson = async url => (await fetch(url, { signal: AbortSignal.timeout(3000) })).json()
 const deadline = Date.now() + 240000
 const checkDeadline = () => { if (Date.now() > deadline) throw new Error('Browser regression exceeded its 4 minute deadline') }
 const passed = []
@@ -176,57 +164,33 @@ const api = http.createServer(async (req, res) => {
 })
 const listen = server => new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)))
 const freePort = async()=>{const server=http.createServer();const port=await listen(server);await new Promise(r=>server.close(r));return port}
-let vite,chrome,ws,temp
+let vite,browser,temp
 let launchError
 const chromeDiagnostics = { executable: '', exitCode: null, signal: null, stderr: '' }
-const pending = new Map()
 let viteLogs=''
 let cdp,js
 const dialogs=[]
 let acceptDialog=false
 const check=(condition,label)=>{assert.ok(condition,label);passed.push(label)}
 try {
-    const chromePath = await findChrome()
     temp=await fs.mkdtemp(path.join(os.tmpdir(),'profile-editor-check-'))
     const picture=path.join(temp,'선택 이미지.png');await fs.writeFile(picture,image)
-    const apiPort=await listen(api),vitePort=await freePort(),debugPort=await freePort()
+    const apiPort=await listen(api),vitePort=await freePort()
     const appUrl=`http://127.0.0.1:${vitePort}`
     vite=spawn(process.execPath,[path.join(project,'node_modules/vite/bin/vite.js'),'--host','127.0.0.1','--port',String(vitePort),'--strictPort'],{cwd:project,env:{...process.env,VITE_SUPABASE_URL:`http://127.0.0.1:${apiPort}`,VITE_SUPABASE_PUBLISHABLE_KEY:'test-publishable-key',VITE_ADMIN_EMAIL:user.email,VITE_ADMIN_USER_ID:user.id,VITE_SUPABASE_STORAGE_BUCKET:'site-images'},windowsHide:true,stdio:['ignore','pipe','pipe']})
     vite.on('error',error=>{launchError=error})
     for(const stream of [vite.stdout,vite.stderr])stream.on('data',chunk=>{viteLogs=(viteLogs+chunk.toString()).slice(-3000)})
     for(let i=0;i<100;i++){checkDeadline();if(launchError)throw launchError;try{if((await fetch(appUrl,{signal:AbortSignal.timeout(3000)})).ok)break}catch{} await pause(100);if(i===99)throw new Error(`Vite did not start: ${viteLogs}`)}
-    chromeDiagnostics.executable = chromePath
-    chrome=spawn(chromePath,['--headless=new','--disable-gpu','--disable-dev-shm-usage','--no-first-run','--no-default-browser-check',`--remote-debugging-port=${debugPort}`,`--user-data-dir=${path.join(temp,'chrome')}`,'about:blank'],{windowsHide:true,stdio:['ignore','ignore','pipe']})
-    chrome.stderr.on('data', chunk => { chromeDiagnostics.stderr = (chromeDiagnostics.stderr + chunk.toString()).slice(-6000) })
-    chrome.on('error',error=>{launchError=error})
-    chrome.on('exit', (code, signal) => { chromeDiagnostics.exitCode = code; chromeDiagnostics.signal = signal })
-    let target
-    const chromeDeadline = Date.now() + 30000
-    while(Date.now()<chromeDeadline){checkDeadline();if(launchError)throw launchError;if(chrome.exitCode!==null||chrome.signalCode!==null)throw new Error('Chrome exited before its debugging endpoint was ready');try{target=(await fetchJson(`http://127.0.0.1:${debugPort}/json`)).find(t=>t.type==='page');if(target)break}catch{}await pause(100)}
-    if(!target)throw new Error('Chrome did not start; set CHROME_PATH to a Chromium executable')
-    ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('CDP connection timed out')),10000);ws.addEventListener('open',()=>{clearTimeout(timer);resolve()},{once:true});ws.addEventListener('error',()=>{clearTimeout(timer);reject(new Error('CDP connection failed'))},{once:true})})
-    let sequence=0
-    cdp=(method,params={})=>new Promise((resolve,reject)=>{
-        try{checkDeadline()}catch(error){reject(error);return}
-        if(ws.readyState!==WebSocket.OPEN){reject(new Error(`CDP disconnected before ${method}`));return}
-        const id=++sequence
-        const timer=setTimeout(()=>{pending.delete(id);reject(new Error(`CDP timed out: ${method}`))},15000)
-        pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}})
-        ws.send(JSON.stringify({id,method,params}))
-    })
-    ws.addEventListener('close',()=>{for(const task of pending.values())task.reject(new Error('CDP connection closed'));pending.clear()})
-    ws.addEventListener('error',()=>{for(const task of pending.values())task.reject(new Error('CDP connection error'));pending.clear()})
-    ws.addEventListener('message',event=>{
-        const message=JSON.parse(event.data)
-        if(message.id){const task=pending.get(message.id);pending.delete(message.id);if(task){if(message.error)task.reject(new Error(JSON.stringify(message.error)));else task.resolve(message.result)}}
+    browser = await launchBrowser({ checkDeadline, diagnostics: chromeDiagnostics })
+    cdp = browser.cdp; js = browser.js
+    browser.onEvent(message => {
         if(message.method==='Runtime.exceptionThrown')errors.push(message.params.exceptionDetails.exception?.description||message.params.exceptionDetails.text)
         if(message.method==='Page.javascriptDialogOpening'){
             dialogs.push({...message.params,accepted:acceptDialog})
             void cdp('Page.handleJavaScriptDialog',{accept:acceptDialog}).catch(error=>errors.push(error.message))
         }
     })
-    js=async expression=>{const result=await cdp('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(result.exceptionDetails)throw new Error(result.exceptionDetails.exception?.description||result.exceptionDetails.text);return result.result.value}
-    const until=async(expression,label,timeout=20000)=>{const start=Date.now();while(Date.now()-start<timeout){if(await js(expression))return;await pause(70)}throw new Error(`Timed out: ${label}\n${await js('document.body.innerText')}`)}
+    const until = browser.until
     const untilRequests=async(condition,label)=>{const start=Date.now();while(Date.now()-start<5000){checkDeadline();if(condition())return;await pause(20)}throw new Error(`Timed out waiting for mock request: ${label}`)}
     const hasEditor=()=>js('!!document.querySelector("#profileName")')
     const button=async pattern=>js(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>new RegExp(${JSON.stringify(pattern)}).test(b.textContent));if(!b)throw new Error('Missing button '+${JSON.stringify(pattern)});b.click();return true})()`)
@@ -759,9 +723,8 @@ try {
 } catch(error) {
     const diagnostics=js?await js(`({url:location.pathname,buttons:[...document.querySelectorAll('button')].map(b=>({text:b.textContent,disabled:b.matches(':disabled')}))})`).catch(()=>null):null;console.error(JSON.stringify({phase,passed:passed.length,checks:passed,errors,diagnostics,dialogs,viteLogs,chromeDiagnostics,requests:requests.slice(-12).map(r=>({method:r.method,path:r.path,body:r.body,cancelled:r.cancelled})),failure:error.stack},null,2));process.exitCode=1
 } finally {
-    if(cdp){try{await Promise.race([cdp('Browser.close'),pause(1000)])}catch{}}
-    for(const task of pending.values())task.reject(new Error('Browser test finished'))
-    pending.clear()
-    ws?.close();chrome?.kill();vite?.kill();api.closeAllConnections();await new Promise(resolve=>api.close(resolve))
-    if(temp){const resolved=path.resolve(temp);if(!resolved.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(resolved).startsWith('profile-editor-check-')){console.error('Unsafe temporary cleanup path');process.exitCode=1}else{await pause(300);await fs.rm(resolved,{recursive:true,force:true,maxRetries:5,retryDelay:200})}}
+    try { await browser?.close() } finally {
+        vite?.kill();api.closeAllConnections();await new Promise(resolve=>api.close(resolve))
+        if(temp){const resolved=path.resolve(temp);if(!resolved.startsWith(path.resolve(os.tmpdir())+path.sep)||!path.basename(resolved).startsWith('profile-editor-check-')){console.error('Unsafe temporary cleanup path');process.exitCode=1}else{await pause(300);await fs.rm(resolved,{recursive:true,force:true,maxRetries:5,retryDelay:200})}}
+    }
 }

@@ -2,10 +2,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import http from 'node:http'
-import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
+import { launchBrowser as launchChrome, pause } from './helpers/browser.mjs'
 
 const apiOrigin = 'https://nvunhhyxbbjqgzdhodrw.supabase.co'
 const allowedAppOrigins = new Set(['https://proflie-manage.vercel.app'])
@@ -14,7 +13,6 @@ const checks = [], original = new Map(), imageHashes = new Map(), owned = new Se
 const runName = `운영 검증 ${Date.now()}-${randomUUID().slice(0, 8)}`
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64')
 const fingerprint = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)).digest('hex')
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const check = (condition, label) => { assert.ok(condition, label); checks.push(label) }
 let config, anon, admin, browser, temp, baseline
 
@@ -59,55 +57,17 @@ async function cleanFiles(files) {
 }
 
 async function launchBrowser(appOrigin) {
-    const debugServer = http.createServer()
-    await new Promise(resolve => debugServer.listen(0, '127.0.0.1', resolve))
-    const port = debugServer.address().port
-    await new Promise(resolve => debugServer.close(resolve))
-    const candidates = process.env.CHROME_PATH ? [process.env.CHROME_PATH] : process.platform === 'win32'
-        ? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe']
-        : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
-    let executable
-    for (const file of candidates) { try { await fs.access(file); executable = file; break } catch {} }
-    assert(executable, 'Chrome is required for production browser verification')
-    const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'profile-production-browser-'))
-    const child = spawn(executable, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-default-apps',
-        `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' })
-    const pending = new Map(), errors = [], violations = [], unexpected = [], requests = []
-    let ws, call, target, launchError
-    child.on('error', error => { launchError = error })
-    const close = async () => {
-        if (call) { try { await Promise.race([call('Browser.close'), pause(1000)]) } catch {} }
-        for (const entry of pending.values()) entry.reject(new Error('Production browser finished'))
-        pending.clear(); ws?.close(); child.kill()
-        const resolved = path.resolve(profile)
-        assert(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep) && path.basename(resolved).startsWith('profile-production-browser-'))
-        await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-    }
+    const session = await launchChrome({ commandTimeout: 20000 })
+    const { cdp: call, js, onEvent } = session
+    const errors = [], violations = [], unexpected = [], requests = []
+    const handlers = new Set()
+    const track = task => { handlers.add(task); void task.finally(() => handlers.delete(task)) }
+    const close = async () => { await Promise.allSettled([...handlers]); await session.close() }
     try {
-        for (let attempt = 0; attempt < 100; attempt++) {
-            if (launchError) throw launchError
-            try { target = (await (await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(1500) })).json()).find(entry => entry.type === 'page'); if (target) break } catch {}
-            await pause(100)
-        }
-        assert(target, 'Production verification Chrome did not start')
-        ws = new WebSocket(target.webSocketDebuggerUrl)
-        await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('Production CDP connection timed out')), 10000)
-            ws.addEventListener('open', () => { clearTimeout(timer); resolve() }, { once: true })
-            ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Production CDP failed')) }, { once: true })
-        })
-        let sequence = 0
-        call = (method, params = {}) => new Promise((resolve, reject) => {
-            const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)) }, 20000)
-            pending.set(id, { resolve: result => { clearTimeout(timer); resolve(result) }, reject: error => { clearTimeout(timer); reject(error) } })
-            ws.send(JSON.stringify({ id, method, params }))
-        })
-        ws.addEventListener('message', event => {
-            const message = JSON.parse(event.data)
-            if (message.id) { const entry = pending.get(message.id); pending.delete(message.id); if (entry) { if (message.error) entry.reject(new Error(message.error.message)); else entry.resolve(message.result) } }
+        onEvent(message => {
             if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text)
             if (message.method === 'Log.entryAdded' && message.params.entry.source === 'security') violations.push(message.params.entry.text)
-            if (message.method === 'Page.javascriptDialogOpening') void call('Page.handleJavaScriptDialog', { accept: true }).catch(error => errors.push(safeError(error)))
+            if (message.method === 'Page.javascriptDialogOpening') track(call('Page.handleJavaScriptDialog', { accept: true }).catch(error => errors.push(safeError(error))))
             if (message.method === 'Fetch.requestPaused') {
                 const { requestId, request } = message.params, url = new URL(request.url)
                 const permitted = ['about:', 'blob:', 'data:'].includes(url.protocol) || [appOrigin, apiOrigin, 'https://cdn.jsdelivr.net'].includes(url.origin)
@@ -121,25 +81,15 @@ async function launchBrowser(appOrigin) {
                     }
                 }
                 if (!permitted) unexpected.push({ origin: url.origin, path: url.pathname })
-                void call(permitted ? 'Fetch.continueRequest' : 'Fetch.failRequest', permitted ? { requestId } : { requestId, errorReason: 'BlockedByClient' }).catch(error => errors.push(safeError(error)))
+                track(call(permitted ? 'Fetch.continueRequest' : 'Fetch.failRequest', permitted ? { requestId } : { requestId, errorReason: 'BlockedByClient' }).catch(error => errors.push(safeError(error))))
             }
         })
-        ws.addEventListener('close', () => { for (const entry of pending.values()) entry.reject(new Error('Production CDP closed')); pending.clear() })
-        const js = async expression => {
-            const result = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-            if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
-            return result.result.value
-        }
         await call('Runtime.enable'); await call('Page.enable'); await call('DOM.enable'); await call('Log.enable')
         await call('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
         await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__productionViolations=[];document.addEventListener('securitypolicyviolation',event=>window.__productionViolations.push({directive:event.effectiveDirective,blocked:event.blockedURI}));` })
-        const until = async (expression, label, timeout = 30000) => {
-            const deadline = Date.now() + timeout
-            while (Date.now() < deadline) { if (await js(expression)) return; await pause(100) }
-            throw new Error(`Timed out: ${label}`)
-        }
         return {
-            js, until, call, errors, violations, unexpected, requests, close,
+            js, until: (expression, label, timeout = 30000) => session.until(expression, label, timeout),
+            call, errors, violations, unexpected, requests, close,
             navigate: async route => { assert(route.startsWith('/') && !route.startsWith('//')); await call('Page.navigate', { url: appOrigin + route }); await pause(100) },
             set: (selector, value) => js(`(()=>{const field=document.querySelector(${JSON.stringify(selector)});const proto=field instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(field,${JSON.stringify(value)});field.dispatchEvent(new Event('input',{bubbles:true}));})()`),
             click: selector => js(`document.querySelector(${JSON.stringify(selector)}).click()`),

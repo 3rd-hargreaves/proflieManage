@@ -1,41 +1,24 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import http from 'node:http'
-import os from 'node:os'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { launchBrowser, pause } from './browser.mjs'
 
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const listen = server => new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolve(server.address().port) })
 })
 
-async function findChrome() {
-    const candidates = process.env.CHROME_PATH ? [process.env.CHROME_PATH] : process.platform === 'win32'
-        ? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe')]
-        : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/opt/google/chrome/chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
-    for (const file of candidates) { try { await fs.access(file); return file } catch {} }
-    throw new Error('Chrome/Chromium is required for real Supabase browser checks.')
-}
-
-export async function createRehearsalBrowser({ project, dist, headers, rewrites, apiOrigin }) {
+export async function createRehearsalBrowser({ dist, headers, rewrites, apiOrigin }) {
     const errors = [], violations = [], unexpectedRequests = [], apiRequests = []
-    const pending = new Map(), handlers = new Set()
-    let server, chrome, ws, cdp, appUrl, temp
+    const handlers = new Set()
+    let server, browser, appUrl
     const stop = async () => {
-        if (cdp) { try { await Promise.race([cdp('Browser.close'), pause(1000)]) } catch {} }
-        for (const entry of pending.values()) entry.reject(new Error('Rehearsal browser finished'))
-        pending.clear(); ws?.close(); chrome?.kill()
-        if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
-        if (temp) {
-            const target = path.resolve(temp)
-            assert.ok(target.startsWith(path.resolve(os.tmpdir()) + path.sep) && path.basename(target).startsWith('profile-rehearsal-browser-'))
-            await fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+        try { await Promise.allSettled([...handlers]); await browser?.close() } finally {
+            if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
         }
     }
     try {
-        temp = await fs.mkdtemp(path.join(os.tmpdir(), 'profile-rehearsal-browser-'))
         const types = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' }
         server = http.createServer(async (request, response) => {
             try {
@@ -57,45 +40,9 @@ export async function createRehearsalBrowser({ project, dist, headers, rewrites,
             }
         })
         appUrl = `http://127.0.0.1:${await listen(server)}`
-        const portServer = http.createServer(), debugPort = await listen(portServer)
-        await new Promise(resolve => portServer.close(resolve))
-        const chromePath = await findChrome()
-        chrome = spawn(chromePath, [
-            '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-            '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-default-apps',
-            '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-            `--remote-debugging-port=${debugPort}`, `--user-data-dir=${path.join(temp, 'chrome')}`, 'about:blank',
-        ], { cwd: project, windowsHide: true, stdio: 'ignore' })
-        let launchError, target
-        chrome.on('error', error => { launchError = error })
-        for (let attempt = 0; attempt < 100; attempt++) {
-            if (launchError) throw launchError
-            try {
-                const response = await fetch(`http://127.0.0.1:${debugPort}/json`, { signal: AbortSignal.timeout(1500) })
-                target = (await response.json()).find(entry => entry.type === 'page')
-                if (target) break
-            } catch {}
-            await pause(100)
-        }
-        if (!target) throw new Error('Rehearsal Chrome did not start.')
-        ws = new WebSocket(target.webSocketDebuggerUrl)
-        await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('Rehearsal CDP connection timed out')), 10000)
-            ws.addEventListener('open', () => { clearTimeout(timer); resolve() }, { once: true })
-            ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Rehearsal CDP failed')) }, { once: true })
-        })
-        let sequence = 0
-        cdp = (method, params = {}) => new Promise((resolve, reject) => {
-            const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timed out: ${method}`)) }, 20000)
-            pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value) }, reject: error => { clearTimeout(timer); reject(error) } })
-            ws.send(JSON.stringify({ id, method, params }))
-        })
-        ws.addEventListener('message', event => {
-            const message = JSON.parse(event.data)
-            if (message.id) {
-                const entry = pending.get(message.id); pending.delete(message.id)
-                if (entry) { if (message.error) entry.reject(new Error(message.error.message)); else entry.resolve(message.result) }
-            }
+        browser = await launchBrowser({ commandTimeout: 20000, args: ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'] })
+        const { cdp, js, until, onEvent } = browser
+        onEvent(message => {
             if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text)
             if (message.method === 'Log.entryAdded' && message.params.entry.source === 'security') violations.push(message.params.entry.text)
             if (message.method === 'Page.javascriptDialogOpening') void cdp('Page.handleJavaScriptDialog', { accept: true }).catch(error => errors.push(error.message))
@@ -118,20 +65,9 @@ export async function createRehearsalBrowser({ project, dist, headers, rewrites,
                 handlers.add(task); void task.finally(() => handlers.delete(task))
             }
         })
-        ws.addEventListener('close', () => { for (const entry of pending.values()) entry.reject(new Error('Rehearsal CDP closed')); pending.clear() })
-        const js = async expression => {
-            const result = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-            if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
-            return result.result.value
-        }
         await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('DOM.enable'); await cdp('Log.enable')
         await cdp('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
         await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `window.__rehearsalViolations=[];document.addEventListener('securitypolicyviolation',event=>window.__rehearsalViolations.push({directive:event.effectiveDirective,blocked:event.blockedURI}));` })
-        const until = async (expression, label, timeout = 20000) => {
-            const deadline = Date.now() + timeout
-            while (Date.now() < deadline) { if (await js(expression)) return; await pause(75) }
-            throw new Error(`Timed out: ${label}`)
-        }
         return {
             appUrl, cdp, js, until, errors, violations, unexpectedRequests, apiRequests, close: stop,
             navigate: async route => { assert.ok(route.startsWith('/') && !route.startsWith('//')); await cdp('Page.navigate', { url: appUrl + route }); await pause(100) },

@@ -16,6 +16,7 @@
         "test:editor": "node --experimental-strip-types --test tests/editorDirty.test.ts tests/sortLock.test.ts",
         "test:editor:browser": "node tests/editor.browser.mjs",
         "test:security:browser": "node tests/security.browser.mjs",
+        "test:browser:tools": "node --test tests/browserTools.test.mjs",
         "test:services": "vitest run",
         "test:migration": "node --test tests/multiCharacterMigration.test.mjs",
         "test:rpc": "node --test tests/characterRpc.test.mjs",

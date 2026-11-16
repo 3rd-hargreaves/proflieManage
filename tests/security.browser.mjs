@@ -5,17 +5,17 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { launchBrowser, pause } from './helpers/browser.mjs'
 
 // Only an isolated production build, fresh browser profile, and mocked API are used.
 // CDP intercepts all non-local requests; DNS is also disabled for external hosts.
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const deadline = Date.now() + 180000
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const checkDeadline = () => {
     if (Date.now() > deadline) throw new Error('Production security checks exceeded their 3 minute deadline')
 }
 const passed = [], errors = [], requests = [], securityLogs = [], mockedExternal = [], unexpectedExternal = []
-const pending = new Map(), handlers = new Set()
+const handlers = new Set()
 const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64')
 const user = {
     id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.test',
@@ -47,36 +47,19 @@ let currentSecondSite = structuredClone(secondSite)
 const mainTheme = { ...site.theme, main_color: '#c34f78' }
 const mainData = { characters: [secondSite, site].map((entry, index) => ({ ...entry.profile, sort_order: index + 1 })), theme: mainTheme }
 const check = (condition, label) => { assert.ok(condition, label); passed.push(label) }
-async function findChrome() {
-    const candidates = process.env.CHROME_PATH ? [process.env.CHROME_PATH] : process.platform === 'win32'
-        ? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe')]
-        : process.platform === 'darwin'
-            ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']
-            : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/opt/google/chrome/chrome']
-    for (const candidate of candidates) {
-        try { await fs.access(candidate); return candidate } catch {}
-    }
-    throw new Error('Chrome/Chromium executable not found. Set CHROME_PATH to its installed executable.')
-}
 const listen = server => new Promise((resolve, reject) => {
     server.once('error', reject)
     server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolve(server.address().port) })
 })
-const freePort = async () => {
-    const server = http.createServer(), port = await listen(server)
-    await new Promise(resolve => server.close(resolve))
-    return port
-}
 async function stopProcess(child) {
     if (!child || child.exitCode !== null || child.signalCode !== null) return
     child.kill()
     await Promise.race([new Promise(resolve => child.once('exit', resolve)), pause(2000)])
 }
-let temp, build, chrome, server, ws, cdp, js, appUrl, launchError
+let temp, build, browser, server, cdp, js, appUrl
 let buildLogs = ''
 const chromeDiagnostics = { executable: '', exitCode: null, signal: null, stderr: '' }
 try {
-    const chromePath = await findChrome()
     const config = JSON.parse(await fs.readFile(path.join(project, 'vercel.json'), 'utf8'))
     const globalHeaders = config.headers.find(rule => rule.source === '/(.*)')?.headers
     assert.ok(globalHeaders, 'vercel.json must apply security headers to every path')
@@ -160,44 +143,10 @@ try {
         check(response.status === 200 && Object.entries(requiredHeaders).every(([key, value]) => response.headers.get(key) === value)
             && (route === bundlePath ? response.headers.get('content-type')?.startsWith('application/javascript') && !body.startsWith('<') : body === index), `${route} 프로덕션 응답·보안 헤더·rewrite 정상`)
     }
-    const debugPort = await freePort()
-    chromeDiagnostics.executable = chromePath
-    chrome = spawn(chromePath, [
-        '--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
-        '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-default-apps',
-        '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
-        `--remote-debugging-port=${debugPort}`, `--user-data-dir=${path.join(temp, 'chrome')}`, 'about:blank',
-    ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
-    chrome.stderr.on('data', chunk => { chromeDiagnostics.stderr = (chromeDiagnostics.stderr + chunk.toString()).slice(-6000) })
-    chrome.on('error', error => { launchError = error })
-    chrome.on('exit', (code, signal) => { chromeDiagnostics.exitCode = code; chromeDiagnostics.signal = signal })
-    let target
-    const chromeDeadline = Date.now() + 30000
-    while (Date.now() < chromeDeadline) {
-        checkDeadline()
-        if (launchError) throw launchError
-        if (chrome.exitCode !== null || chrome.signalCode !== null) throw new Error('Chrome exited before its debugging endpoint was ready')
-        try {
-            target = (await (await fetch(`http://127.0.0.1:${debugPort}/json`, { signal: AbortSignal.timeout(2000) })).json()).find(entry => entry.type === 'page')
-            if (target) break
-        } catch {}
-        await pause(100)
-    }
-    if (!target) throw new Error('Chrome did not start; set CHROME_PATH to a Chromium executable')
-    ws = new WebSocket(target.webSocketDebuggerUrl)
-    await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('CDP connection timed out')), 10000)
-        ws.addEventListener('open', () => { clearTimeout(timer); resolve() }, { once: true })
-        ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('CDP connection failed')) }, { once: true })
+    browser = await launchBrowser({ checkDeadline, diagnostics: chromeDiagnostics,
+        args: ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'],
     })
-    let sequence = 0
-    cdp = (method, params = {}) => new Promise((resolve, reject) => {
-        try { checkDeadline() } catch (error) { reject(error); return }
-        if (ws.readyState !== WebSocket.OPEN) { reject(new Error(`CDP disconnected before ${method}`)); return }
-        const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timed out: ${method}`)) }, 15000)
-        pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value) }, reject: error => { clearTimeout(timer); reject(error) } })
-        ws.send(JSON.stringify({ id, method, params }))
-    })
+    cdp = browser.cdp; js = browser.js
     const mockRequest = async params => {
         const { requestId, request } = params, url = new URL(request.url)
         if (url.origin === appUrl || ['about:', 'blob:', 'data:'].includes(url.protocol)) { await cdp('Fetch.continueRequest', { requestId }); return }
@@ -247,12 +196,7 @@ try {
         unexpectedExternal.push({ method: request.method, url: request.url })
         await cdp('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' })
     }
-    ws.addEventListener('message', event => {
-        const message = JSON.parse(event.data)
-        if (message.id) {
-            const task = pending.get(message.id); pending.delete(message.id)
-            if (task) { if (message.error) task.reject(new Error(JSON.stringify(message.error))); else task.resolve(message.result) }
-        }
+    browser.onEvent(message => {
         if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text)
         if (message.method === 'Log.entryAdded' && message.params.entry.source === 'security') securityLogs.push(message.params.entry.text)
         if (message.method === 'Page.javascriptDialogOpening') void cdp('Page.handleJavaScriptDialog', { accept: true }).catch(error => errors.push(error.message))
@@ -261,18 +205,7 @@ try {
             handlers.add(task); void task.finally(() => handlers.delete(task))
         }
     })
-    const disconnect = () => { for (const task of pending.values()) task.reject(new Error('CDP connection closed')); pending.clear() }
-    ws.addEventListener('close', disconnect); ws.addEventListener('error', disconnect)
-    js = async expression => {
-        const result = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-        if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
-        return result.result.value
-    }
-    const until = async (expression, label, timeout = 15000) => {
-        const started = Date.now()
-        while (Date.now() - started < timeout) { checkDeadline(); if (await js(expression)) return; await pause(50) }
-        throw new Error(`Timed out: ${label}`)
-    }
+    const until = (expression, label, timeout = 15000) => browser.until(expression, label, timeout)
     const navigate = async route => { await cdp('Page.navigate', { url: appUrl + route }); await pause(150) }
     const setInput = (selector, value) => js(`(() => {const field=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(field,${JSON.stringify(value)});field.dispatchEvent(new Event('input',{bubbles:true}));})()`)
     await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('DOM.enable'); await cdp('Log.enable')
@@ -418,14 +351,13 @@ try {
     console.error(JSON.stringify({ passed: passed.length, checks: passed, errors, diagnostics, unexpectedExternal, securityLogs, buildLogs, chromeDiagnostics, failure: error.stack, cause: error.cause?.message }, null, 2))
     process.exitCode = 1
 } finally {
-    if (cdp) { try { await Promise.race([cdp('Browser.close'), pause(1000)]) } catch {} }
-    for (const task of pending.values()) task.reject(new Error('Production security test finished'))
-    pending.clear(); ws?.close()
-    await stopProcess(chrome); await stopProcess(build)
-    if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
-    if (temp) {
-        const resolved = path.resolve(temp)
-        if (!resolved.startsWith(path.resolve(os.tmpdir()) + path.sep) || !path.basename(resolved).startsWith('profile-security-check-')) { console.error('Unsafe temporary cleanup path'); process.exitCode = 1 }
-        else { await pause(300); await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }) }
+    try { await browser?.close() } finally {
+        await stopProcess(build)
+        if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
+        if (temp) {
+            const resolved = path.resolve(temp)
+            if (!resolved.startsWith(path.resolve(os.tmpdir()) + path.sep) || !path.basename(resolved).startsWith('profile-security-check-')) { console.error('Unsafe temporary cleanup path'); process.exitCode = 1 }
+            else { await pause(300); await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }) }
+        }
     }
 }

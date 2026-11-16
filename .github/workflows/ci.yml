@@ -29,6 +29,8 @@ jobs:
             - run: npm run lint
             - run: npm test
             - run: npm run build
+            - name: Browser tooling and production guards
+              run: npm run test:browser:tools
             - name: Browser regressions
               run: npm run test:editor:browser
             - name: Production security headers
