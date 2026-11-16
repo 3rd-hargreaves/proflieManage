@@ -1,10 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { SubmitEvent } from 'react'
-import FeedEditor from '../components/FeedEditor'
-import ProfileEditor from '../components/ProfileEditor'
-import SectionEditor from '../components/SectionEditor'
-import ThemeEditor from '../components/ThemeEditor'
-import SortableList from '../components/SortableList'
+import CharacterFields from '../components/CharacterFields'
 import { applyTheme, themeFields, toThemeData } from '../utils/theme'
 import { isHexColor } from '../utils/validation'
 import { validateSiteDraft } from '../utils/siteDraft'
@@ -29,24 +25,28 @@ function validationField(form: HTMLFormElement, issue: DraftValidationIssue): HT
 }
 
 interface EditPageProps {
-    onLogout: () => Promise<void>
     signingOut: boolean
-    logoutError: string | null
     authNotice: { message: string, checking: boolean, requiresLogin: boolean } | null
     onRetryAuth: () => void
     onReauthenticate: () => void
     onExit: () => void
     onLeaveGuardChange: (guard: LeaveGuard) => void
     canWrite: () => boolean
+    onBusyChange?: (busy: boolean) => void
 }
 
-export default function EditPage({ onLogout, signingOut, logoutError, authNotice, onRetryAuth, onReauthenticate, onExit, onLeaveGuardChange, canWrite }: EditPageProps) {
+export default function EditPage({ signingOut, authNotice, onRetryAuth, onReauthenticate, onExit, onLeaveGuardChange, canWrite, onBusyChange }: EditPageProps) {
     const form = useRef<HTMLFormElement>(null)
     const {
         baseline, draft, loading, loadError, focusedSection, saving, saveError, saved,
         cleanupWarning, cleaning, editorVersion, sorting, sortLock, editingDisabled,
         pendingCleanupCount, change, addSection, reload, canSave, save: saveDraft, retryCleanup, reportError,
     } = useSiteEditor({ signingOut, authBlocked: !!authNotice, canWrite, onLeaveGuardChange })
+
+    useEffect(() => {
+        onBusyChange?.(loading || saving || cleaning || sorting)
+        return () => onBusyChange?.(false)
+    }, [onBusyChange, loading, saving, cleaning, sorting])
 
     useEffect(() => {
         const previousTitle = document.title
@@ -100,57 +100,9 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
             {draft && !loading && (
                 <form ref={form} className="flexColumn gapLg" noValidate onSubmit={save}>
                     <fieldset className="editorFields flexColumn gapLg" disabled={editingDisabled} key={editorVersion}>
-                        <ThemeEditor value={draft.theme} onChange={(key, value) => change({ ...draft, theme: { ...draft.theme, [key]: value } })} />
-                        <ProfileEditor value={draft.profile} onChange={profile => change({ ...draft, profile })} />
-                        <div id="sections" className="widthFull flexColumn gapLg">
-                            <p className="text3">↕ 순서 이동 버튼을 드래그해 순서 이동</p>
-                            <SortableList
-                                items={draft.sections}
-                                label="섹션 순서"
-                                className="flexColumn gapLg"
-                                getLabel={section => section.title || '제목 없는 섹션'}
-                                onChange={sections => change({ ...draft, sections })}
-                                listId="sections"
-                                sortLock={sortLock}
-                                disabled={editingDisabled}
-                            >
-                                {(section, handleProps) => (
-                                    <SectionEditor
-                                        value={section}
-                                        autoFocus={section.id === focusedSection}
-                                        dragHandle={<button {...handleProps} className="btn dragHandle h30 widthFull border borderRad pdSide"><span aria-hidden="true">↕</span> 순서 이동</button>}
-                                        sorting={sorting}
-                                        onChange={value => change({ ...draft, sections: draft.sections.map(item => item.id === value.id ? value : item) })}
-                                        onDelete={() => change({ ...draft, sections: draft.sections.filter(item => item.id !== section.id) })}
-                                    />
-                                )}
-                            </SortableList>
-                            <button
-                                id="addSectionBtn"
-                                className="btn h30 border borderRad"
-                                type="button"
-                                disabled={sorting}
-                                onClick={addSection}
-                            >섹션 추가</button>
-                        </div>
-                        <div className="card widthFull pdLg flexColumn gapSm">
-                            <p className="widthFull text2 mainColorText bold">키워드</p>
-                            <p className="text3"> ,로 구분 </p>
-                            <input
-                                id="keywords"
-                                className="widthFull h30 pdSide border borderRad"
-                                type="text"
-                                placeholder="키워드"
-                                aria-label="키워드"
-                                value={draft.keywords}
-                                onChange={event => {
-                                    event.currentTarget.setCustomValidity('')
-                                    change({ ...draft, keywords: event.currentTarget.value })
-                                }}
-                            />
-                        </div>
-                        <FeedEditor value={draft.feed} onChange={feed => change({ ...draft, feed })} disabled={editingDisabled} sorting={sorting} sortLock={sortLock} maxCount={feedImageLimit(baseline?.feed.length ?? 0)} />
-                        <button className="btn h30 border borderRad widthFull" type="submit" disabled={sorting}>{saving ? '저장 중…' : '저장'}</button>
+                        <CharacterFields draft={draft} change={change} addSection={addSection}
+                            focusedSection={focusedSection} sorting={sorting} sortLock={sortLock}
+                            editingDisabled={editingDisabled} maxFeedCount={feedImageLimit(baseline?.feed.length ?? 0)} saving={saving} />
                     </fieldset>
                     {saved && <p role="status">저장 성공</p>}
                     {saveError && (
@@ -173,10 +125,12 @@ export default function EditPage({ onLogout, signingOut, logoutError, authNotice
                     )}
                 </form>
             )}
-            <button className="btn h30 border borderRad" type="button" disabled={editingDisabled || sorting} onClick={onLogout}>
-                {signingOut ? '로그아웃 중…' : '로그아웃'}
-            </button>
-            {logoutError && <p role="alert">{logoutError}</p>}
+            {draft && !loading && (
+                <div className="flexColumn gapSm">
+                    <p className="text3" id="characterDeleteNotice">캐릭터 삭제는 준비 중입니다.</p>
+                    <button className="btn h30 border borderRad widthFull" type="button" disabled aria-describedby="characterDeleteNotice">캐릭터 삭제</button>
+                </div>
+            )}
         </main>
     )
 }

@@ -1,12 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import MainPage from './pages/MainPage'
+import CharacterPage from './pages/CharacterPage'
+import SiteHeader from './components/SiteHeader'
 import LoginModal from './components/LoginModal'
 import { useGuardedNavigation } from './hooks/useGuardedNavigation'
 import { authConfigurationError, supabase } from './lib/supabase'
 import { getAdminUser, signOut } from './services/auth'
+import { isEditorPath, resolveRoute } from './utils/routes'
 
 const EditPage = lazy(() => import('./pages/EditPage'))
+const NewCharacterPage = lazy(() => import('./pages/NewCharacterPage'))
 type AuthStatus = 'checking' | 'authenticated' | 'signedOut' | 'error'
 interface AuthState {
     // Retain the last verified owner while an open editor is locked for recovery.
@@ -14,7 +18,6 @@ interface AuthState {
     status: AuthStatus
     error: string | null
 }
-const isEditorPath = (path: string) => ['/edit', '/manage.html'].includes(path.replace(/\/$/, ''))
 
 export default function App() {
     const [auth, setAuth] = useState<AuthState>({ user: null, status: authConfigurationError ? 'signedOut' : 'checking', error: null })
@@ -28,6 +31,7 @@ export default function App() {
     const { path, navigate, confirmLeave, setLeaveGuard, getCurrentPath, getLocationKey } = useGuardedNavigation(onPathChange)
     const [signingOut, setSigningOut] = useState(false)
     const [logoutError, setLogoutError] = useState<string | null>(null)
+    const [editorBusy, setEditorBusy] = useState(false)
     const active = useRef(false)
     const epoch = useRef(0)
     const verification = useRef<{ epoch: number, promise: Promise<User | null> } | null>(null)
@@ -35,6 +39,8 @@ export default function App() {
     const writeAllowed = useRef(false)
     const canWrite = useCallback(() => writeAllowed.current, [])
     const isEdit = isEditorPath(path)
+    const route = resolveRoute(path)
+    const isAdmin = auth.status === 'authenticated' && !!auth.user
     const invalidateVerification = useCallback(() => {
         writeAllowed.current = false
         epoch.current++
@@ -107,7 +113,6 @@ export default function App() {
         if (!user) throw new Error('관리자 로그인 상태를 다시 확인해 주세요.')
         setReauthOpen(false)
         setLogoutError(null)
-        if (!isEditorPath(getCurrentPath())) navigate('/edit')
     }
 
     async function logout() {
@@ -130,11 +135,13 @@ export default function App() {
         }
     }
 
-    if (!isEdit) {
-        return <MainPage isAdmin={auth.status === 'authenticated' && !!auth.user} onOpenEditor={() => { navigate('/edit') }} onLoginSuccess={onLoginSuccess} />
-    }
-    if (!auth.user) {
-        return (
+    const notFound = route.page === 'notFound'
+        || ((route.page === 'character' || route.page === 'edit') && route.characterId !== '1')
+    function content() {
+        if (notFound) return <main><p className="card pdLg text3">캐릭터를 찾을 수 없습니다.</p></main>
+        if (route.page === 'main') return <MainPage isAdmin={isAdmin} navigate={navigate} />
+        if (route.page === 'character') return <CharacterPage />
+        if (!auth.user) return (
             <main>
                 <div className="card pdLg flexColumn gapMd">
                     <p role="status">{authConfigurationError || auth.error || '로그인 상태를 확인하고 있습니다.'}</p>
@@ -142,6 +149,18 @@ export default function App() {
                     <button type="button" className="btn h30 border borderRad" onClick={() => { navigate('/') }}>메인으로</button>
                 </div>
             </main>
+        )
+        return (
+            <Suspense fallback={<main><p className="card pdLg text3" role="status">수정 화면을 불러오는 중…</p></main>}>
+                {route.page === 'new' ? (
+                    <NewCharacterPage authBlocked={!isAdmin || signingOut} onLeaveGuardChange={setLeaveGuard} />
+                ) : (
+                    <EditPage signingOut={signingOut} onBusyChange={setEditorBusy}
+                        authNotice={authNotice} onRetryAuth={() => void verifyUser()}
+                        onReauthenticate={() => setReauthOpen(true)} onExit={() => { navigate('/') }}
+                        onLeaveGuardChange={setLeaveGuard} canWrite={canWrite} />
+                )}
+            </Suspense>
         )
     }
 
@@ -156,12 +175,11 @@ export default function App() {
     }
     return (
         <>
-            <Suspense fallback={<main><p className="card pdLg text3" role="status">수정 화면을 불러오는 중…</p></main>}>
-                <EditPage onLogout={logout} signingOut={signingOut} logoutError={logoutError}
-                    authNotice={authNotice} onRetryAuth={() => void verifyUser()}
-                    onReauthenticate={() => setReauthOpen(true)} onExit={() => { navigate('/') }}
-                    onLeaveGuardChange={setLeaveGuard} canWrite={canWrite} />
-            </Suspense>
+            <SiteHeader isAdmin={isAdmin} showEditor={route.page === 'character' && !notFound}
+                busy={auth.status === 'checking' || (isEdit && editorBusy)} signingOut={signingOut}
+                navigate={navigate} onLogin={() => setReauthOpen(true)} onLogout={() => void logout()} />
+            {logoutError && <p className="card pdLg" role="alert">{logoutError}</p>}
+            {content()}
             <LoginModal isOpen={reauthOpen} onClose={() => setReauthOpen(false)} onLoginSuccess={onLoginSuccess} />
         </>
     )

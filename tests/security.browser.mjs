@@ -124,7 +124,7 @@ try {
                 response.end("window.__selfScriptRan=true;try{Function('window.__unsafeEvalRan=true')()}catch(error){window.__unsafeEvalBlocked=error.name}")
                 return
             }
-            const rewrite = config.rewrites?.find(rule => rule.source === pathname)?.destination
+            const rewrite = config.rewrites?.find(rule => rule.source === pathname || (rule.source === '/characters/:path*' && pathname.startsWith('/characters/')))?.destination
             const destination = rewrite || (pathname === '/' ? '/index.html' : pathname)
             const filename = path.resolve(dist, `.${destination}`)
             if (!filename.startsWith(path.resolve(dist) + path.sep)) { response.writeHead(403); response.end(); return }
@@ -145,7 +145,7 @@ try {
         'permissions-policy': 'camera=(), microphone=(), geolocation=()',
         'content-security-policy': policy,
     }
-    for (const route of ['/', '/edit', '/edit/', '/manage.html', '/manage.html/', bundlePath]) {
+    for (const route of ['/', '/characters/1', '/characters/new', '/characters/1/edit', '/edit', '/edit/', '/manage.html', '/manage.html/', bundlePath]) {
         const response = await fetch(appUrl + route, { signal: AbortSignal.timeout(3000) }), body = await response.text()
         check(response.status === 200 && Object.entries(requiredHeaders).every(([key, value]) => response.headers.get(key) === value)
             && (route === bundlePath ? response.headers.get('content-type')?.startsWith('application/javascript') && !body.startsWith('<') : body === index), `${route} 프로덕션 응답·보안 헤더·rewrite 정상`)
@@ -237,7 +237,7 @@ try {
     await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('DOM.enable'); await cdp('Log.enable')
     await cdp('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] })
     await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `window.__policyViolations=[];document.addEventListener('securitypolicyviolation',event=>window.__policyViolations.push({directive:event.effectiveDirective,blocked:event.blockedURI}));` })
-    await navigate('/')
+    await navigate('/characters/1')
     await until(`document.querySelector('.profileName')?.textContent === ${JSON.stringify(site.profile.name)}`, 'main RPC content')
     check(await js(`document.title === ${JSON.stringify(site.profile.name)} && document.querySelector('.sectionContent strong')?.textContent === '정상 표시'`)
         && mockedExternal.some(request => request.path === '/rest/v1/rpc/load_site'), 'CSP 아래 production bundle·Supabase 메인 RPC·서식 표시 정상')
@@ -247,6 +247,23 @@ try {
     check(await js(`getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim() === '#7841ab'`), 'Supabase 공개 이미지와 inline 테마 CSS 허용')
     check(await js(`new Promise(resolve=>{const image=new Image();image.onload=()=>resolve(image.naturalWidth===1);image.onerror=()=>resolve(false);image.src='data:image/png;base64,${image.toString('base64')}';document.body.append(image)})`), 'data 이미지 허용')
     check(await js('window.__policyViolations.length === 0'), '정상 메인 화면에 CSP 위반 없음')
+
+    if (process.env.PROFILE_SCREENSHOT_DIR) {
+        const screenshotDirectory = path.resolve(process.env.PROFILE_SCREENSHOT_DIR)
+        await fs.mkdir(screenshotDirectory, { recursive: true })
+        for (const width of [1280, 768, 390]) {
+            await cdp('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width <= 768 })
+            for (const [page, route, ready] of [['main', '/', '.character'], ['profile', '/characters/1', '.profileName']]) {
+                await navigate(route)
+                await until(`!!document.querySelector(${JSON.stringify(ready)})`, `${page} screenshot ${width}`)
+                await pause(150)
+                const { data } = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
+                await fs.writeFile(path.join(screenshotDirectory, `${page}-${width}.png`), Buffer.from(data, 'base64'))
+            }
+        }
+        await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+        console.log(`Screenshots: ${screenshotDirectory}`)
+    }
 
     await js(`(async()=>{
         const inline=document.createElement('script');inline.textContent='window.__inlineScriptRan=true';document.body.append(inline);
@@ -268,19 +285,24 @@ try {
     while (!securityLogs.some(text => /frame-ancestors|X-Frame-Options/i.test(text)) && Date.now() - ancestorStarted < 5000) await pause(50)
     check(securityLogs.some(text => /frame-ancestors|X-Frame-Options/i.test(text)), 'frame-ancestors·X-Frame-Options로 동일 출처의 iframe 삽입도 차단')
     check(unexpectedExternal.length === 0, '차단 대상 외부 요청은 네트워크 mock 단계에도 도달하지 않음')
-    for (const route of ['/edit', '/manage.html']) {
+    for (const route of ['/edit', '/manage.html', '/characters/1/edit', '/characters/new']) {
         await navigate(route)
-        await until(`location.pathname === '/' && document.querySelector('.edit')?.getAttribute('aria-label') === '관리자 로그인 열기'`, `${route} signed-out guard`)
+        await until(`location.pathname === '/' && !!document.querySelector('.headerLoginButton')`, `${route} signed-out guard`)
         check(await js('!document.querySelector("#profileName")'), `${route} 직접 진입은 bundle 로드 후 미인증 편집을 차단`)
     }
-    await js('document.querySelector(".edit").click()')
+    await js('document.querySelector(".headerLoginButton").click()')
     await until('!!document.querySelector("#loginModal input")', 'production login modal')
     await setInput('#loginModal input', 'security-test-password')
     await js('document.querySelector("#loginModal button[type=submit]").click()')
-    await until('!!document.querySelector("#profileName") && !document.querySelector("#loginModal")', 'production mocked login')
+    await until('!!document.querySelector(".headerLogoutButton") && !document.querySelector("#loginModal")', 'production mocked login')
+    check(await js('location.pathname === "/" && !document.querySelector("#profileName")'), '헤더 로그인 후 메인 모음 주소 유지')
+    await navigate('/characters/1')
+    await until('!!document.querySelector(".headerEditLink")', 'profile editor link')
+    await js('document.querySelector(".headerEditLink").click()')
+    await until('!!document.querySelector("#profileName")', 'production editor entry')
     check(mockedExternal.some(request => request.method === 'POST' && request.path === '/auth/v1/token') && mockedExternal.some(request => request.path === '/auth/v1/user')
         && await js(`document.querySelector('#profileName').value === ${JSON.stringify(site.profile.name)}`), 'production CSP 아래 모의 로그인·서버 사용자 확인·편집 lazy bundle 정상')
-    for (const route of ['/edit', '/manage.html']) {
+    for (const route of ['/edit', '/manage.html', '/characters/1/edit']) {
         await navigate(route); await until('!!document.querySelector("#profileName")', `${route} authenticated direct entry`)
         check(await js(`location.pathname === ${JSON.stringify(route)} && document.querySelector('#profileName').value === ${JSON.stringify(site.profile.name)}`), `${route} 인증된 직접 진입은 rewrite와 편집 bundle 정상`)
     }

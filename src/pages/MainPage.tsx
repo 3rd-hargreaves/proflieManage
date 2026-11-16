@@ -1,115 +1,68 @@
-import { useCallback, useEffect, useState } from 'react'
-import FeedGallery from '../components/FeedGallery'
-import type { GalleryImage } from '../components/FeedGallery'
-import ImageModal from '../components/ImageModal'
-import LoginModal from '../components/LoginModal'
+import { useEffect, useState } from 'react'
 import SiteImage from '../components/SiteImage'
-import SectionContent from '../components/SectionContent'
-import { getImageUrl } from '../services/storage'
-import type { SiteData } from '../types/site'
-import { applyTheme } from '../utils/theme'
+import SiteLink from '../components/SiteLink'
+import ThemeEditor from '../components/ThemeEditor'
 import { useSiteQuery } from '../hooks/useSiteQuery'
+import { getImageUrl } from '../services/storage'
+import { applyTheme, toThemeData } from '../utils/theme'
+import { isHexColor } from '../utils/validation'
 
 interface MainPageProps {
     isAdmin: boolean
-    onOpenEditor: () => void
-    onLoginSuccess: () => Promise<void>
+    navigate: (path: string) => void
 }
 
-export default function MainPage({ isAdmin, onOpenEditor, onLoginSuccess }: MainPageProps) {
-    const [modal, setModal] = useState<'login' | GalleryImage | null>(null)
-    const closeModal = useCallback(() => setModal(null), [])
+// Main theme storage is introduced in the database migration, separately from the profile theme.
+const initialTheme = { mainColor: '#E45C9A', backgroundColor: '#FDE8F0', cardBackgroundColor: '#FFFFFF', typoColor: '#26232A' }
+
+export default function MainPage({ isAdmin, navigate }: MainPageProps) {
+    const { state, reload } = useSiteQuery()
+    const [theme, setTheme] = useState(initialTheme)
+    const preview = isAdmin ? theme : initialTheme
 
     useEffect(() => {
-        const previousTitle = document.title
-        document.title = '프로필'
-        return () => { document.title = previousTitle }
+        const previous = document.title
+        document.title = '캐릭터 모음'
+        return () => { document.title = previous }
     }, [])
+    useEffect(() => {
+        if (!Object.values(preview).every(isHexColor)) return
+        return applyTheme({ id: 1, ...toThemeData(preview) })
+    }, [preview])
 
-    const showSite = useCallback((site: SiteData) => {
-        const restoreTheme = applyTheme(site.theme)
-        document.title = site.profile.name
-        return restoreTheme
-    }, [])
-    const { state: siteState, reload } = useSiteQuery({ onLoad: showSite })
-
-    const site = siteState.status === 'ready' ? siteState.data : null
-    const images: GalleryImage[] = site ? site.feed.map((image, index) => ({
-        id: String(image.id),
-        src: getImageUrl(image.image_path),
-        alt: `피드 이미지 ${index + 1}`,
-    })) : []
+    // Until migration, the existing single profile supplies one real card; no demo characters are saved.
+    const characters = state.status === 'ready' ? [state.data.profile] : []
 
     return (
-        <>
-            <button
-                type="button"
-                className="btn border borderRad edit"
-                aria-label={isAdmin ? '수정 화면 열기' : '관리자 로그인 열기'}
-                onClick={() => {
-                    if (isAdmin) onOpenEditor()
-                    else setModal('login')
-                }}
-            >✎</button>
-
-            <main className="flexColumn gapLg" aria-busy={siteState.status === 'loading'}>
-                {siteState.status === 'loading' && <p className="card pdLg text3" role="status">불러오는 중…</p>}
-                {siteState.status === 'error' && (
-                    <div className="card pdLg flexColumn gapMd">
-                        <p className="text3" role="alert">{siteState.message}</p>
-                        <button
-                            type="button"
-                            className="btn h30 border borderRad"
-                            onClick={() => {
-                                document.title = '프로필'
-                                reload()
-                            }}
-                        >다시 시도</button>
+        <main className="flexColumn gapLg" aria-busy={state.status === 'loading'}>
+            {state.status === 'loading' && <p className="card pdLg text3" role="status">불러오는 중…</p>}
+            {state.status === 'error' && (
+                <div className="card pdLg flexColumn gapMd">
+                    <p className="text3" role="alert">{state.message}</p>
+                    <button className="btn h30 border borderRad" type="button" onClick={reload}>다시 시도</button>
+                </div>
+            )}
+            {characters.map(character => (
+                <SiteLink key={character.id} className="character card flex pdLg gapMd" href={`/characters/${character.id}`} navigate={navigate}>
+                    <SiteImage className="profileImg" src={getImageUrl(character.profile_image_path)} alt={`${character.name} 프로필 이미지`} fallbackText={character.profile_image_path ? undefined : '이미지 없음'} />
+                    <div className="flexColumn gapSm">
+                        <p className="text1 bold">{character.name}</p>
+                        <p className="text3">{character.status_message}</p>
                     </div>
-                )}
-
-                {site && (
-                    <>
-                        <div className="flexColumn alignCenter gapMd">
-                            <SiteImage
-                                className="profileImg"
-                                src={getImageUrl(site.profile.profile_image_path)}
-                                alt={`${site.profile.name} 프로필 이미지`}
-                                fallbackText={site.profile.profile_image_path ? undefined : '이미지 없음'}
-                            />
-                            <p className="widthFull text1 mainColorText bold textCenter profileName">{site.profile.name}</p>
-                            <p className="widthFull text3 textCenter profileMessage">“<span>{site.profile.status_message}</span>”</p>
-                        </div>
-
-                        <div className="widthFull flexColumn gapLg">
-                            {site.sections.map(section => (
-                                <div key={section.id} className="card widthFull pdLg flexColumn gapSm">
-                                    <p className="widthFull text2 mainColorText bold sectionText">{section.title}</p>
-                                    <SectionContent content={section.content} label={section.title} />
-                                </div>
-                            ))}
-                            {site.sections.length === 0 && <p className="card pdLg text3">등록된 섹션이 없습니다.</p>}
-                        </div>
-
-                        <div className="card widthFull pdLg flexColumn gapSm">
-                            <p className="widthFull text2 mainColorText bold">키워드</p>
-                            <div className="widthFull flex gapSm keywordList">
-                                {site.keywords.map(keyword => (
-                                    <div key={keyword.id} className="keyword text3 mainColorText borderRad line">
-                                        {keyword.content.startsWith('#') ? keyword.content : `#${keyword.content}`}
-                                    </div>
-                                ))}
-                                {site.keywords.length === 0 && <p className="text3">등록된 키워드가 없습니다.</p>}
-                            </div>
-                        </div>
-
-                        <FeedGallery images={images} onOpenImage={setModal} />
-                    </>
-                )}
-            </main>
-
-            <LoginModal isOpen={modal === 'login'} onClose={closeModal} onLoginSuccess={onLoginSuccess} />
-            {modal && modal !== 'login' && <ImageModal image={modal} onClose={closeModal} />}
-        </>
+                </SiteLink>
+            ))}
+            {state.status === 'ready' && characters.length === 0 && <p className="card pdLg text3">등록된 캐릭터가 없습니다.</p>}
+            {isAdmin && (
+                <>
+                    <p className="text3">드래그 앤 드롭으로 순서 변경</p>
+                    <button className="btn h30 border borderRad widthFull" type="button" disabled>순서 저장</button>
+                    <SiteLink className="btn h30 border borderRad widthFull flex alignCenter justifyCenter" href="/characters/new" navigate={navigate}>캐릭터 추가</SiteLink>
+                    <ThemeEditor title="메인 테마" value={theme} onChange={(key, value) => setTheme(previous => ({ ...previous, [key]: value }))}>
+                        <button className="btn h30 border borderRad widthFull" type="button" disabled>테마 저장</button>
+                    </ThemeEditor>
+                    <p className="text3">순서 변경과 메인 테마 저장은 준비 중입니다. 테마 색상은 미리 볼 수 있습니다.</p>
+                </>
+            )}
+        </main>
     )
 }
