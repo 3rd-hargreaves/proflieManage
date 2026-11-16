@@ -9,6 +9,7 @@ interface JournalStorage {
 interface CleanupRecord {
     path: string
     queuedAt: number
+    characterId?: number
 }
 
 export function isCleanupPath(path: string): boolean {
@@ -41,7 +42,11 @@ export function createCleanupJournal(scope: string, getStorage: () => JournalSto
                     if (typeof record.path !== 'string' || !isCleanupPath(record.path)
                         || !Number.isSafeInteger(record.queuedAt) || (record.queuedAt as number) < 0
                         || key !== prefix + encodeURIComponent(record.path)) continue
-                    pending.set(record.path, { path: record.path, queuedAt: record.queuedAt as number })
+                    if ('characterId' in record && (!Number.isSafeInteger(record.characterId) || (record.characterId as number) < 1)) continue
+                    pending.set(record.path, {
+                        path: record.path, queuedAt: record.queuedAt as number,
+                        ...('characterId' in record ? { characterId: record.characterId as number } : {}),
+                    })
                     unsaved.delete(record.path)
                 } catch {
                     // Ignore malformed entries rather than treating them as files.
@@ -65,9 +70,10 @@ export function createCleanupJournal(scope: string, getStorage: () => JournalSto
     }
 
     return {
-        add(path: string) {
+        add(path: string, characterId?: number) {
             if (!isCleanupPath(path)) return
-            if (!pending.has(path)) pending.set(path, { path, queuedAt: Date.now() })
+            if (characterId !== undefined && (!Number.isSafeInteger(characterId) || characterId < 1)) return
+            if (!pending.has(path)) pending.set(path, { path, queuedAt: Date.now(), ...(characterId === undefined ? {} : { characterId }) })
             persist(path)
         },
         remove(path: string) {

@@ -16,6 +16,8 @@
         }
     ],
     "rewrites": [
+        { "source": "/characters/:path*", "destination": "/index.html" },
+        { "source": "/character/:path*", "destination": "/index.html" },
         { "source": "/edit", "destination": "/index.html" },
         { "source": "/edit/", "destination": "/index.html" },
         { "source": "/manage.html", "destination": "/index.html" },

@@ -1,12 +1,21 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { User } from '@supabase/supabase-js'
 import MainPage from './pages/MainPage'
+import CharacterPage from './pages/CharacterPage'
+import SiteHeader from './components/SiteHeader'
 import LoginModal from './components/LoginModal'
 import { useGuardedNavigation } from './hooks/useGuardedNavigation'
+import type { LeaveGuard } from './hooks/useGuardedNavigation'
+import { createSortLock } from './utils/sortLock'
+import type { SiteData } from './types/site'
+import ImageCleanupNotice from './components/ImageCleanupNotice'
+import { getPendingImageCleanupCount } from './services/storage'
 import { authConfigurationError, supabase } from './lib/supabase'
 import { getAdminUser, signOut } from './services/auth'
+import { characterEditPath, characterPath, isEditorPath, resolveRoute } from './utils/routes'
 
 const EditPage = lazy(() => import('./pages/EditPage'))
+const NewCharacterPage = lazy(() => import('./pages/NewCharacterPage'))
 type AuthStatus = 'checking' | 'authenticated' | 'signedOut' | 'error'
 interface AuthState {
     // Retain the last verified owner while an open editor is locked for recovery.
@@ -14,20 +23,33 @@ interface AuthState {
     status: AuthStatus
     error: string | null
 }
-const isEditorPath = (path: string) => ['/edit', '/manage.html'].includes(path.replace(/\/$/, ''))
 
 export default function App() {
     const [auth, setAuth] = useState<AuthState>({ user: null, status: authConfigurationError ? 'signedOut' : 'checking', error: null })
     const [reauthOpen, setReauthOpen] = useState(false)
+    const [workLock] = useState(createSortLock)
+    const [mainSortLock] = useState(createSortLock)
+    const [mainVersion, setMainVersion] = useState(0)
+    const workOwner = useSyncExternalStore(workLock.subscribe, workLock.getOwner, workLock.getOwner)
+    const mainSortOwner = useSyncExternalStore(mainSortLock.subscribe, mainSortLock.getOwner, mainSortLock.getOwner)
+    const pageGuard = useRef<LeaveGuard>(null)
+    const [cleanupNotice, setCleanupNotice] = useState<string | null>(null)
     const onPathChange = useCallback((nextPath: string) => {
         if (!isEditorPath(nextPath)) {
             setReauthOpen(false)
             setAuth(previous => previous.status === 'authenticated' ? previous : { ...previous, user: null })
         }
     }, [])
-    const { path, navigate, confirmLeave, setLeaveGuard, getCurrentPath, getLocationKey } = useGuardedNavigation(onPathChange)
+    const { path, navigate, confirmLeave, setLeaveGuard: setNavigationGuard, getCurrentPath, getLocationKey } = useGuardedNavigation(onPathChange)
+    const setLeaveGuard = useCallback((guard: LeaveGuard) => { pageGuard.current = guard }, [])
+    useEffect(() => {
+        setNavigationGuard(() => workLock.getOwner() !== null || !!pageGuard.current?.())
+        return () => setNavigationGuard(null)
+    }, [workLock, setNavigationGuard])
     const [signingOut, setSigningOut] = useState(false)
     const [logoutError, setLogoutError] = useState<string | null>(null)
+    const [editorBusy, setEditorBusy] = useState(false)
+    const [loadedCharacter, setLoadedCharacter] = useState<number | null>(null)
     const active = useRef(false)
     const epoch = useRef(0)
     const verification = useRef<{ epoch: number, promise: Promise<User | null> } | null>(null)
@@ -35,6 +57,8 @@ export default function App() {
     const writeAllowed = useRef(false)
     const canWrite = useCallback(() => writeAllowed.current, [])
     const isEdit = isEditorPath(path)
+    const route = resolveRoute(path)
+    const isAdmin = auth.status === 'authenticated' && !!auth.user
     const invalidateVerification = useCallback(() => {
         writeAllowed.current = false
         epoch.current++
@@ -107,11 +131,10 @@ export default function App() {
         if (!user) throw new Error('관리자 로그인 상태를 다시 확인해 주세요.')
         setReauthOpen(false)
         setLogoutError(null)
-        if (!isEditorPath(getCurrentPath())) navigate('/edit')
     }
 
     async function logout() {
-        if (logoutPending.current || !confirmLeave()) return
+        if (logoutPending.current || workLock.getOwner() !== null || mainSortLock.getOwner() !== null || !confirmLeave()) return
         logoutPending.current = true
         writeAllowed.current = false
         setSigningOut(true)
@@ -120,6 +143,7 @@ export default function App() {
             await signOut()
             invalidateVerification()
             setAuth({ user: null, status: 'signedOut', error: null })
+            setMainVersion(version => version + 1)
             navigate('/', true, true)
         } catch (error) {
             setLogoutError(errorMessage(error))
@@ -130,11 +154,24 @@ export default function App() {
         }
     }
 
-    if (!isEdit) {
-        return <MainPage isAdmin={auth.status === 'authenticated' && !!auth.user} onOpenEditor={() => { navigate('/edit') }} onLoginSuccess={onLoginSuccess} />
+    const notFound = route.page === 'notFound'
+    function onCreated(site: SiteData, warning: string | null) {
+        setCleanupNotice(warning)
+        navigate(characterPath(site.profile.id), true, true)
     }
-    if (!auth.user) {
-        return (
+    function onDeleted(warning: string | null) {
+        setCleanupNotice(warning)
+        navigate('/', true, true)
+    }
+    function content() {
+        if (notFound) return <main><p className="card pdLg text3">캐릭터를 찾을 수 없습니다.</p></main>
+        if (route.page === 'main') return (
+            <MainPage key={`main-${mainVersion}`} isAdmin={isAdmin} signingOut={signingOut} navigate={navigate}
+                workLock={workLock} sortLock={mainSortLock} canWrite={canWrite} onLeaveGuardChange={setLeaveGuard}
+                authNotice={authNotice} onRetryAuth={() => void verifyUser()} onReauthenticate={() => setReauthOpen(true)} />
+        )
+        if (route.page === 'character') return <CharacterPage key={`character-${route.characterId}`} characterId={route.characterId} onLoaded={setLoadedCharacter} />
+        if (!auth.user) return (
             <main>
                 <div className="card pdLg flexColumn gapMd">
                     <p role="status">{authConfigurationError || auth.error || '로그인 상태를 확인하고 있습니다.'}</p>
@@ -142,6 +179,22 @@ export default function App() {
                     <button type="button" className="btn h30 border borderRad" onClick={() => { navigate('/') }}>메인으로</button>
                 </div>
             </main>
+        )
+        return (
+            <Suspense fallback={<main><p className="card pdLg text3" role="status">수정 화면을 불러오는 중…</p></main>}>
+                {route.page === 'new' ? (
+                    <NewCharacterPage key="new" authBlocked={!isAdmin || signingOut} onLeaveGuardChange={setLeaveGuard}
+                        authNotice={authNotice} workLock={workLock} canWrite={canWrite} onCreated={onCreated}
+                        onRetryAuth={() => void verifyUser()} onReauthenticate={() => setReauthOpen(true)} onExit={() => { navigate('/') }} onBusyChange={setEditorBusy} />
+                ) : route.page === 'edit' ? (
+                    <EditPage key={`edit-${route.characterId}`} characterId={route.characterId}
+                        signingOut={signingOut} onBusyChange={setEditorBusy}
+                        workLock={workLock} onDeleted={onDeleted}
+                        authNotice={authNotice} onRetryAuth={() => void verifyUser()}
+                        onReauthenticate={() => setReauthOpen(true)} onExit={() => { navigate('/') }}
+                        onLeaveGuardChange={setLeaveGuard} canWrite={canWrite} />
+                ) : null}
+            </Suspense>
         )
     }
 
@@ -156,12 +209,17 @@ export default function App() {
     }
     return (
         <>
-            <Suspense fallback={<main><p className="card pdLg text3" role="status">수정 화면을 불러오는 중…</p></main>}>
-                <EditPage onLogout={logout} signingOut={signingOut} logoutError={logoutError}
-                    authNotice={authNotice} onRetryAuth={() => void verifyUser()}
-                    onReauthenticate={() => setReauthOpen(true)} onExit={() => { navigate('/') }}
-                    onLeaveGuardChange={setLeaveGuard} canWrite={canWrite} />
-            </Suspense>
+            <SiteHeader isAdmin={isAdmin} editHref={route.page === 'character' && loadedCharacter === route.characterId ? characterEditPath(route.characterId) : undefined}
+                busy={auth.status === 'checking' || workOwner !== null || mainSortOwner !== null || (isEdit && editorBusy)} signingOut={signingOut}
+                navigate={navigate} onLogin={() => setReauthOpen(true)} onLogout={() => void logout()} />
+            {logoutError && <p className="card pdLg" role="alert">{logoutError}</p>}
+            {isAdmin && !isEdit && (cleanupNotice || getPendingImageCleanupCount() > 0) && (
+                <div className="globalNotice">
+                    <ImageCleanupNotice message={cleanupNotice} workLock={workLock} sortLock={route.page === 'main' ? mainSortLock : undefined}
+                        canWrite={canWrite} blocked={!isAdmin || signingOut} onCleared={() => setCleanupNotice(null)} />
+                </div>
+            )}
+            {content()}
             <LoginModal isOpen={reauthOpen} onClose={() => setReauthOpen(false)} onLoginSuccess={onLoginSuccess} />
         </>
     )

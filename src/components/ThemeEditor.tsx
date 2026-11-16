@@ -1,16 +1,19 @@
+import type { ReactNode } from 'react'
 import type { ThemeColors } from '../types/site'
 import { themeFields } from '../utils/theme'
 import { hexColorMessage, isHexColor } from '../utils/validation'
 
 interface ThemeEditorProps {
+    children?: ReactNode
+    title?: string
     value: ThemeColors
     onChange: (key: keyof ThemeColors, value: string) => void
 }
 
-export default function ThemeEditor({ value, onChange }: ThemeEditorProps) {
+export default function ThemeEditor({ value, onChange, title = '테마', children }: ThemeEditorProps) {
     return (
         <div className="card pdLg flexColumn alignCenter gapMd">
-            <p className="widthFull text2 mainColorText bold">테마</p>
+            <p className="widthFull text2 mainColorText bold">{title}</p>
             {themeFields.map(({ key, variable, label }) => (
                 <div className="widthFull flex gapSm" key={key}>
                     <p className="text3 widthFull colorClass line">{label}</p>
@@ -33,6 +36,7 @@ export default function ThemeEditor({ value, onChange }: ThemeEditorProps) {
                     />
                 </div>
             ))}
+            {children}
         </div>
     )
 }

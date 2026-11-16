@@ -1,133 +1,123 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { getPendingImageCleanupCount, imageCleanupWarning, retryImageCleanup, saveSite } from '../services/save'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { SiteData, SiteEditDraft } from '../types/site'
 import { isEditorDirty } from '../utils/editorDirty'
 import { toDraft } from '../utils/siteDraft'
 import type { LeaveGuard } from './useGuardedNavigation'
-import { useSiteQuery } from './useSiteQuery'
+import { useCharacterQuery } from './useSiteQuery'
 import { useSortLock } from './useSortLock'
+import { useEditorWork } from './useEditorWork'
+import { deleteCharacter, saveCharacter } from '../services/save'
+import type { SortLock } from '../utils/sortLock'
 
 interface SiteEditorOptions {
+    characterId: number
     signingOut: boolean
     authBlocked: boolean
     canWrite: () => boolean
     onLeaveGuardChange: (guard: LeaveGuard) => void
+    workLock: SortLock
+    onDeleted: (warning: string | null) => void
 }
 
-export function useSiteEditor({ signingOut, authBlocked, canWrite, onLeaveGuardChange }: SiteEditorOptions) {
-    const mounted = useRef(true)
-    const savingRef = useRef(false)
-    const cleaningRef = useRef(false)
-    const current = useRef<{ baseline: SiteData | null, draft: SiteEditDraft | null }>({ baseline: null, draft: null })
-    const { lock: sortLock, activeListId } = useSortLock()
-    const [baseline, setBaseline] = useState<SiteData | null>(null)
-    const [draft, setDraft] = useState<SiteEditDraft | null>(null)
-    const [focusedSection, setFocusedSection] = useState<string | null>(null)
-    const [saving, setSaving] = useState(false)
-    const [saveError, setSaveError] = useState<string | null>(null)
-    const [saved, setSaved] = useState(false)
-    const [cleanupWarning, setCleanupWarning] = useState<string | null>(() => imageCleanupWarning())
-    const [cleaning, setCleaning] = useState(false)
-    const [editorVersion, setEditorVersion] = useState(0)
+interface EditorData {
+    characterId: number
+    baseline: SiteData | null
+    draft: SiteEditDraft | null
+}
 
-    useEffect(() => {
-        mounted.current = true
-        return () => { mounted.current = false }
-    }, [])
+export function useSiteEditor({ characterId, signingOut, authBlocked, canWrite, onLeaveGuardChange, workLock, onDeleted }: SiteEditorOptions) {
+    const current = useRef<EditorData>({ characterId, baseline: null, draft: null })
+    const [editor, setEditor] = useState<EditorData>(() => ({ characterId, baseline: null, draft: null }))
+    const { lock: sortLock, activeListId } = useSortLock()
+    const [focusedSection, setFocusedSection] = useState<string | null>(null)
+    const [editorVersion, setEditorVersion] = useState(0)
+    const [saved, setSaved] = useState(false)
+    const [cleanupWarning, setCleanupWarning] = useState<string | null>(null)
+    const work = useEditorWork({ workLock, sortLock, blocked: signingOut || authBlocked, canWrite })
+
+    useLayoutEffect(() => {
+        current.current = { characterId, baseline: null, draft: null }
+    }, [characterId])
 
     useEffect(() => {
         onLeaveGuardChange(() => isEditorDirty(current.current.baseline, current.current.draft)
-            || savingRef.current || cleaningRef.current || sortLock.getOwner() !== null)
+            || sortLock.getOwner() !== null || workLock.getOwner() !== null)
         return () => onLeaveGuardChange(null)
-    }, [onLeaveGuardChange, sortLock])
+    }, [onLeaveGuardChange, sortLock, workLock])
 
-    const acceptSite = useCallback((site: SiteData) => {
-        const nextDraft = toDraft(site)
-        current.current = { baseline: site, draft: nextDraft }
-        setBaseline(site)
-        setDraft(nextDraft)
+    const acceptCharacter = useCallback((site: SiteData | null) => {
+        const next = { characterId, baseline: site, draft: site ? toDraft(site) : null }
+        current.current = next
+        setEditor(next)
         setFocusedSection(null)
         setEditorVersion(version => version + 1)
-    }, [])
+        setSaved(false)
+    }, [characterId])
 
-    const { state: query, reload: reloadQuery } = useSiteQuery({
-        onLoad: acceptSite,
-        errorMessage: '로드 실패',
+    const { state: query, reload: reloadQuery } = useCharacterQuery(characterId, {
+        onLoad: acceptCharacter,
+        errorMessage: '수정할 정보를 불러오지 못했습니다.',
     })
 
-    const canStart = useCallback(() => {
-        // The refs and sort lock close the gap before disabled controls render.
-        return mounted.current && !savingRef.current && !cleaningRef.current
-            && sortLock.getOwner() === null && !signingOut && !authBlocked && canWrite()
-    }, [sortLock, signingOut, authBlocked, canWrite])
-
-    const canSave = useCallback(() => {
-        return canStart() && current.current.draft !== null && current.current.baseline !== null
-    }, [canStart])
+    const canContinue = work.canContinue
+    const reportError = work.reportError
+    const canEdit = useCallback(() => current.current.characterId === characterId
+        && canContinue() && workLock.getOwner() === null, [characterId, canContinue, workLock])
 
     const change = useCallback((next: SiteEditDraft) => {
-        current.current.draft = next
-        setDraft(next)
+        if (!canEdit() || !current.current.baseline) return
+        current.current = { ...current.current, draft: next }
+        setEditor(current.current)
         setSaved(false)
-    }, [])
+    }, [canEdit])
 
     const addSection = useCallback(() => {
         const draft = current.current.draft
-        if (!draft || !canStart()) return
+        if (!draft || !canEdit() || sortLock.getOwner() !== null) return
         const id = crypto.randomUUID()
         change({ ...draft, sections: [...draft.sections, { id, title: '', content: '' }] })
         setFocusedSection(id)
-    }, [canStart, change])
+    }, [canEdit, change, sortLock])
 
     const reload = useCallback(() => {
-        if (!canStart()) return
-        setSaveError(null)
+        if (workLock.getOwner() !== null || signingOut || sortLock.getOwner() !== null) return
+        if (isEditorDirty(current.current.baseline, current.current.draft)
+            && !window.confirm('편집 내용을 버리고 DB에서 다시 불러오시겠습니까?')) return
+        current.current = { characterId, baseline: null, draft: null }
+        setEditor(current.current)
         setSaved(false)
-        setDraft(null)
-        setBaseline(null)
-        current.current = { baseline: null, draft: null }
-        setFocusedSection(null)
+        reportError(null)
         reloadQuery()
-    }, [canStart, reloadQuery])
+    }, [characterId, signingOut, sortLock, reloadQuery, workLock, reportError])
 
-    const save = useCallback(async () => {
+    async function save() {
         const { draft, baseline } = current.current
-        if (!draft || !baseline || !canStart()) return
-        savingRef.current = true
-        setSaving(true)
-        setSaveError(null)
-        setSaved(false)
-        try {
-            const result = await saveSite(draft, baseline)
-            if (!mounted.current) return
-            acceptSite(result.site)
+        if (!draft || !baseline) return
+        await work.run('saving', async guard => {
+            const result = await saveCharacter(characterId, draft, baseline, guard)
+            if (!work.isMounted()) return
+            acceptCharacter(result.site)
             setCleanupWarning(result.cleanupWarning)
             setSaved(true)
-        } catch (error) {
-            if (mounted.current) {
-                setSaveError(error instanceof Error ? error.message : '저장하지 못했습니다. 다시 시도해 주세요.')
-                if (getPendingImageCleanupCount() > 0) setCleanupWarning(imageCleanupWarning('미저장 이미지 정리가 남아 있습니다. 다시 시도해 주세요.'))
-            }
-        } finally {
-            savingRef.current = false
-            if (mounted.current) setSaving(false)
-        }
-    }, [canStart, acceptSite])
+        })
+    }
 
-    const retryCleanup = useCallback(async () => {
-        if (!canStart()) return
-        cleaningRef.current = true
-        setCleaning(true)
-        try {
-            const complete = await retryImageCleanup()
-            if (mounted.current) setCleanupWarning(complete ? null : imageCleanupWarning('일부 이전 이미지 정리 존재. 재시도 요망.'))
-        } catch {
-            if (mounted.current) setCleanupWarning('이미지 정리 완료 실패. 재시도 요망.')
-        } finally {
-            cleaningRef.current = false
-            if (mounted.current) setCleaning(false)
-        }
-    }, [canStart])
+    async function remove() {
+        const baseline = current.current.baseline
+        if (!baseline) return
+        await work.run('deleting', async guard => {
+            if (!window.confirm('이 캐릭터와 모든 내용을 삭제하시겠습니까? 저장하지 않은 변경사항도 사라집니다.')) return
+            if (!guard()) return
+            const result = await deleteCharacter(characterId, baseline, guard)
+            if (!work.isMounted()) return
+            current.current = { characterId, baseline: null, draft: null }
+            onDeleted(result.cleanupWarning)
+        })
+    }
+
+    const visible = query.status === 'ready' && editor.characterId === characterId
+    const baseline = visible ? editor.baseline : null
+    const draft = visible ? editor.draft : null
 
     return {
         baseline,
@@ -135,23 +125,24 @@ export function useSiteEditor({ signingOut, authBlocked, canWrite, onLeaveGuardC
         dirty: isEditorDirty(baseline, draft),
         loading: query.status === 'loading',
         loadError: query.status === 'error' ? query.message : null,
-        focusedSection,
-        saving,
-        saveError,
-        saved,
-        cleanupWarning,
-        cleaning,
+        notFound: query.status === 'ready' && query.data === null,
+        focusedSection: visible ? focusedSection : null,
         editorVersion,
         sorting: activeListId !== null,
         sortLock,
-        editingDisabled: saving || signingOut || cleaning || authBlocked,
-        pendingCleanupCount: getPendingImageCleanupCount(),
+        editingDisabled: signingOut || authBlocked || work.busy,
+        busy: work.busy,
+        saving: work.action === 'saving',
+        deleting: work.action === 'deleting',
+        saveError: work.error,
+        reportError: work.reportError,
+        cleanupWarning,
+        clearCleanupWarning: () => setCleanupWarning(null),
+        saved,
+        save,
+        remove,
         change,
         addSection,
         reload,
-        canSave,
-        save,
-        retryCleanup,
-        reportError: setSaveError,
     }
 }

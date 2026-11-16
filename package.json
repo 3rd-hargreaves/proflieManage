@@ -6,6 +6,10 @@
     "scripts": {
         "test": "npm run test:format && npm run test:editor && npm run test:services",
         "dev": "vite",
+        "dev:rehearsal": "node scripts/rehearsal.mjs dev",
+        "rehearsal:prepare": "node scripts/rehearsal.mjs prepare",
+        "rehearsal:check": "node scripts/rehearsal.mjs check",
+        "rehearsal:stop": "node scripts/rehearsal.mjs stop",
         "build": "tsc -b && vite build",
         "lint": "oxlint",
         "test:format": "node --experimental-strip-types --test tests/sectionFormat.test.ts",
@@ -13,6 +17,10 @@
         "test:editor:browser": "node tests/editor.browser.mjs",
         "test:security:browser": "node tests/security.browser.mjs",
         "test:services": "vitest run",
+        "test:migration": "node --test tests/multiCharacterMigration.test.mjs",
+        "test:rpc": "node --test tests/characterRpc.test.mjs",
+        "test:rehearsal:db": "node --test tests/rehearsalDatabase.test.mjs",
+        "test:rehearsal:browser": "node tests/rehearsal.integration.mjs supabase/.temp/profile-stage7-stack/credentials.json",
         "preview": "vite preview"
     },
     "dependencies": {
@@ -24,11 +32,13 @@
         "react-dom": "^19.3.1"
     },
     "devDependencies": {
+        "@electric-sql/pglite": "0.5.16",
         "@types/node": "^24.19.2",
         "@types/react": "^19.3.0",
         "@types/react-dom": "^19.3.0",
         "@vitejs/plugin-react": "^6.1.2",
         "oxlint": "^1.90.0",
+        "supabase": "3.1.0",
         "typescript": "~7.0.2",
         "vite": "^8.3.6",
         "vitest": "5.1.0"

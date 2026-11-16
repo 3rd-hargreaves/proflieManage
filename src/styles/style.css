@@ -31,7 +31,7 @@
 
 /* 문서 서식 */
 html { height: 100%; }
-body { min-height: 100vh; background-color: var(--sub-color); }
+body { min-height: 100vh; padding-top: 50px; background-color: var(--sub-color); }
 main
 {
     width: 600px;
@@ -51,6 +51,7 @@ main
 
 /* 정렬 */
 .justifyCenter { justify-content: center; }
+.justifyBetween { justify-content: space-between; }
 .alignCenter { align-items: center; }
 
 /* 여백 */
@@ -121,19 +122,6 @@ a * { cursor: pointer; }
     background-color: var(--background-color);
     color: var(--main-color);
 }
-.edit
-{
-    width: 50px;
-    height: 50px;
-
-    font-size: 30px;
-
-    position: fixed;
-    right: 50px;
-    bottom: 50px;
-}
-@media (max-width: 768px) { .edit { right: 30px; bottom: 30px; } }
-
 /* 인풋 서식 */
 input[type="text"], input[type="password"], textarea
 {
@@ -193,6 +181,63 @@ textarea { height: 200px; padding: var(--px-sm); }
 
 .profileName, .profileMessage, .sectionText { overflow-wrap: anywhere; }
 .profileMessage, .sectionText { white-space: pre-wrap; }
+
+/* 캐릭터 목록 */
+.character > .profileImg { flex-shrink: 0; }
+.character > div
+{
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* 고정 헤더 */
+.siteHeader
+{
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 50px;
+    z-index: 100;
+    background-color: var(--sub-color);
+    border-bottom: 1px solid var(--main-color);
+}
+.headerContent
+{
+    width: 600px;
+    max-width: 90%;
+    height: 100%;
+    margin: auto;
+}
+.headerContent .btn, .homeButton
+{
+    height: 30px;
+    white-space: nowrap;
+}
+.homeButton
+{
+    width: 30px;
+    font-size: 30px;
+    color: var(--main-color);
+    text-decoration: none;
+}
+.homeButton:hover
+{
+    color: var(--background-color);
+    text-decoration: none;
+}
+.headerAction { padding: 0 20px; }
+@media (max-width: 768px)
+{
+    body { padding-top: 40px; }
+    .siteHeader { height: 40px; }
+    .headerContent .btn, .homeButton { height: 24px; }
+    .homeButton
+    {
+        width: 24px;
+        font-size: 24px;
+    }
+}
 
 /* 섹션 내용 서식 */
 .sectionContent { min-width: 0; overflow-wrap: anywhere; }
@@ -309,6 +354,7 @@ textarea { height: 200px; padding: var(--px-sm); }
 
 /* 수정 화면 */
 .editorFields { border: 0; min-width: 0; }
+.globalNotice { width: 600px; max-width: 90%; margin: var(--px-lg) auto 0; }
 button:disabled { cursor: default; opacity: 0.6; }
 
 /* 드래그 정렬 */

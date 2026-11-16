@@ -1,3 +1,5 @@
+export type CharacterId = number
+
 export interface ThemeColors {
     mainColor: string
     backgroundColor: string
@@ -36,7 +38,7 @@ export interface SiteEditDraft {
 }
 
 export interface SiteProfile {
-    id: number
+    id: CharacterId
     name: string
     status_message: string
     profile_image_path: string | null
@@ -75,4 +77,15 @@ export interface SiteData {
     sections: SiteSection[]
     keywords: SiteKeyword[]
     feed: SiteFeedImage[]
+}
+
+export type CharacterData = SiteData
+
+export interface CharacterSummary extends SiteProfile {
+    sort_order: number
+}
+
+export interface MainData {
+    characters: CharacterSummary[]
+    theme: SiteTheme
 }
