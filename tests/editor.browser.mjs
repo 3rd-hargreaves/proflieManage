@@ -660,9 +660,14 @@ try {
     await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]'); await mainUnlocked()
     check(JSON.stringify(await cardOrder()) === '[1,2]' && await selectedColor() === '#abcdef'
         && writeCalls('save_character_order').length + writeCalls('save_main_theme').length === expiredMainStart, '메인 재로그인 복구 후 두 초안 유지·자동 저장 없음')
+    const explicitLogoutMainLoads = requests.filter(request => request.path === '/rest/v1/rpc/load_main').length
     acceptDialog = true; await nativeClick('.headerLogoutButton'); acceptDialog = false
     await until(`!!document.querySelector('.headerLoginButton:not(:disabled)')`, 'main explicit logout')
-    await until(`document.querySelectorAll('.character').length===2`, 'public main reloaded after logout')
+    await untilRequests(() => requests.filter(request => request.path === '/rest/v1/rpc/load_main').length > explicitLogoutMainLoads, 'new public main query after explicit logout')
+    await until(`location.pathname==='/' && document.title==='캐릭터 모음' && document.querySelector('main')?.getAttribute('aria-busy')==='false'
+        && !document.querySelector('main .dragHandle') && !document.querySelector('[data-theme]')
+        && JSON.stringify([...document.querySelectorAll('.character')].map(card=>Number(card.getAttribute('href').split('/').at(-1))))==='[2,1]'
+        && getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()===${JSON.stringify(initialMainTheme.main_color)}`, 'public main query and saved theme settled after logout')
     check(JSON.stringify(await cardOrder()) === '[2,1]' && await selectedColor() === initialMainTheme.main_color
         && !await js(`!!document.querySelector('main .dragHandle') || !!document.querySelector('[data-theme]')`), '명시적 로그아웃 승인 시 메인 초안 폐기하고 저장된 공개 순서·테마만 표시')
 
