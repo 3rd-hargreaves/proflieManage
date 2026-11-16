@@ -74,7 +74,7 @@ const api = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/auth/v1/user') { const status = mode.userStatus; await pause(mode.userDelay); send(status, status === 200 ? user : { code: status === 401 ? 'bad_jwt' : 'unexpected_failure', msg: 'Mock verification failure' }); return }
     if (url.pathname === '/auth/v1/token') { const status = mode.tokenStatus ?? 200; await pause(mode.tokenDelay); send(status, status === 200 ? session() : { error: 'invalid_grant', error_code: 'invalid_credentials', msg: 'Invalid login credentials' }); return }
-    if (url.pathname === '/auth/v1/logout') { send(204); return }
+    if (url.pathname === '/auth/v1/logout') { const status = mode.logoutStatus ?? 204; await pause(mode.logoutDelay ?? 0); send(status, status === 204 ? undefined : { code: 'unexpected_failure', msg: 'Mock logout failure' }); return }
     if (url.pathname === '/rest/v1/rpc/load_main' || url.pathname === '/rest/v1/rpc/load_character') {
         const id = Number(entry.body?.p_character_id)
         const isMain = url.pathname.endsWith('/load_main')
@@ -264,6 +264,7 @@ try {
     const submit = () => js(`document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`)
     const saveReady = () => until(`!!document.querySelector('button[type=submit]:not(:disabled)')`, 'save unlocked')
     const writeCalls = name => requests.filter(r => r.method === 'POST' && r.path.endsWith('/rpc/'+name))
+    const logoutCalls = () => requests.filter(r => r.method === 'POST' && r.path === '/auth/v1/logout')
     const selectedColor = () => js(`getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()`)
     const readRequests = () => requests.filter(r => r.method === 'POST' && /\/rpc\/load_(main|character)$/.test(r.path))
 
@@ -351,6 +352,19 @@ try {
     await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]')
     await until(`!document.querySelector('#loginModal') && !document.querySelector('fieldset').disabled`, 'reauth success')
     check(await js(`location.pathname==='/characters/2/edit' && document.querySelector('#profileName').value==='둘째 편집 초안' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(preview)}`), '재로그인 후 같은 캐릭터 주소·텍스트·File 유지')
+    const cancelledLogoutStart = logoutCalls().length
+    await nativeClick('.headerLogoutButton'); await pause(80)
+    check(logoutCalls().length === cancelledLogoutStart && await js(`location.pathname==='/characters/2/edit' && document.querySelector('#profileName').value==='둘째 편집 초안' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(preview)}`), '편집 중 로그아웃 확인 취소는 인증 요청 없이 주소·텍스트·File 초안 보존')
+    mode.logoutStatus = 503; mode.logoutDelay = 600; acceptDialog = true
+    await button('^로그아웃$'); await js(`document.querySelector('.headerLogoutButton')?.click()`); acceptDialog = false
+    await untilRequests(() => logoutCalls().length > cancelledLogoutStart, 'pending explicit logout')
+    check(await js(`!document.querySelector('.headerLogoutButton:not(:disabled)') && document.querySelector('fieldset').disabled`), '로그아웃 처리 중에는 중복 요청·편집·저장 잠금')
+    await until(`document.body.innerText.includes('로그아웃 실패') && !!document.querySelector('.headerLoginButton:not(:disabled)') && document.querySelector('fieldset').disabled`, 'failed local logout retains locked editor')
+    check(logoutCalls().length === cancelledLogoutStart + 1 && await js(`location.pathname==='/characters/2/edit' && document.querySelector('#profileName').value==='둘째 편집 초안' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(preview)}`), '로컬 로그아웃의 서버 요청 실패에도 같은 편집 초안·File을 보존하고 요청은 한 번만 실행')
+    mode.logoutStatus = 204; mode.logoutDelay = 0
+    await button('^다시 로그인$'); await until(`!!document.querySelector('#loginModal')`, 'reauth after failed local logout')
+    await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]')
+    await until(`!document.querySelector('#loginModal') && !document.querySelector('fieldset').disabled && !document.body.innerText.includes('로그아웃 실패') && document.querySelector('#profileName').value==='둘째 편집 초안' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(preview)}`, 'failed logout draft restored after reauthentication')
     await js(`window.__revoked=[];const revoke=URL.revokeObjectURL.bind(URL);URL.revokeObjectURL=url=>{window.__revoked.push(url);revoke(url)}`)
     acceptDialog = true; await spa('/characters/1/edit'); acceptDialog = false
     await until(`document.querySelector('#profileName')?.value==='첫 캐릭터'`, 'editor id switch')
@@ -687,6 +701,9 @@ try {
     check(JSON.stringify(await cardOrder()) === '[1,2]' && await selectedColor() === '#abcdef'
         && writeCalls('save_character_order').length + writeCalls('save_main_theme').length === expiredMainStart, '메인 재로그인 복구 후 두 초안 유지·자동 저장 없음')
     const explicitLogoutMainLoads = requests.filter(request => request.path === '/rest/v1/rpc/load_main').length
+    const cancelledMainLogoutStart = logoutCalls().length
+    await nativeClick('.headerLogoutButton'); await pause(80)
+    check(logoutCalls().length === cancelledMainLogoutStart && JSON.stringify(await cardOrder()) === '[1,2]' && await selectedColor() === '#abcdef', '메인 로그아웃 확인 취소는 미저장 순서·테마와 로그인 상태 유지')
     acceptDialog = true; await nativeClick('.headerLogoutButton'); acceptDialog = false
     await until(`!!document.querySelector('.headerLoginButton:not(:disabled)')`, 'main explicit logout')
     await untilRequests(() => requests.filter(request => request.path === '/rest/v1/rpc/load_main').length > explicitLogoutMainLoads, 'new public main query after explicit logout')
@@ -720,10 +737,19 @@ try {
     mode.tokenStatus = 400; await set('#loginModal input', 'bad-password'); await nativeClick('#loginModal button[type=submit]')
     await until(`!!document.querySelector('#loginModal [role=alert]')`, 'login failure')
     check(await js(`!document.querySelector('#loginModal button[type=submit]').matches(':disabled')`), '로그인 실패 후 재시도 가능')
-    mode.tokenStatus = 200; mode.tokenDelay = 900; await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]'); await key('Escape'); await clickWithoutScroll('.headerLoginButton')
+    const loginVerificationStart = requests.filter(request => request.method === 'GET' && request.path === '/auth/v1/user').length
+    mode.tokenStatus = 200; mode.tokenDelay = 900; mode.userDelay = 300; await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]'); await key('Escape'); await clickWithoutScroll('.headerLoginButton')
     check(await js(`!!document.querySelector('#loginModal')`), '로그인 요청 중 Escape·바깥 닫기 차단')
     await until(`!document.querySelector('#loginModal') && !!document.querySelector('.headerLogoutButton')`, 'login completed')
     check(await js(`location.pathname==='/' && !document.querySelector('#profileName')`), '헤더 로그인 후 현재 메인 주소 유지')
+    await pause(400)
+    check(requests.filter(request => request.method === 'GET' && request.path === '/auth/v1/user').length === loginVerificationStart + 1, '로그인 완료와 인증 이벤트가 겹쳐도 진행 중 관리자 검증 요청 공유')
+    await reset(false, '/'); await nativeClick('.headerLoginButton'); await until(`!!document.querySelector('#loginModal')`, 'pending route login')
+    const routeVerificationStart = requests.filter(request => request.method === 'GET' && request.path === '/auth/v1/user').length
+    mode.userDelay = 600; await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]')
+    await untilRequests(() => requests.filter(request => request.method === 'GET' && request.path === '/auth/v1/user').length > routeVerificationStart, 'pending login verification before route change')
+    await spa('/characters/2'); await until(`document.querySelector('.profileName')?.textContent==='둘째 캐릭터' && !!document.querySelector('.headerLogoutButton:not(:disabled)')`, 'login verification after route change')
+    check(await js(`location.pathname==='/characters/2' && document.title==='둘째 캐릭터' && !document.querySelector('#loginModal') && !document.querySelector('#profileName')`), '로그인 검증 중 주소 이동 후 늦은 완료가 새 경로·제목·모달 상태를 덮어쓰지 않음')
     const legacy = requests.filter(r => /\/rpc\/(load_site|save_site)$/.test(r.path))
     const writes = requests.filter(r => r.path.startsWith('/storage/') && r.method !== 'GET' && r.method !== 'OPTIONS'
         || r.path.startsWith('/rest/v1/') && r.method !== 'OPTIONS' && !/\/rpc\/load_(main|character)$/.test(r.path))

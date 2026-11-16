@@ -73,9 +73,8 @@ export function useGuardedNavigation(onPathChange: (path: string) => void) {
         setPath(target.pathname)
         return true
     }, [confirmLeave, onPathChange])
-    const getCurrentPath = useCallback(() => pathFromUrl(accepted.current.url), [])
     const getLocationKey = useCallback(() => `${accepted.current.index}:${accepted.current.url}`, [])
-    return { path, navigate, confirmLeave, setLeaveGuard, getCurrentPath, getLocationKey }
+    return { path, navigate, confirmLeave, setLeaveGuard, getLocationKey }
 }
 
 function pathFromUrl(url: string): string {
