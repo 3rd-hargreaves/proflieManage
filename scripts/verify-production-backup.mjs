@@ -6,17 +6,26 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@supabase/supabase-js'
 import {
-    applyApi, applyStructure, createDatabase, dropDatabase, literal, value,
+    applyApi, applyStructure, createDatabase, dropDatabase, literal, sql, value,
 } from '../tests/helpers/rehearsalDatabase.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const directory = path.resolve(process.argv[2] || path.join(root, 'supabase/backups/production-cutover-20261116'))
-const prefix = process.argv[3] || 'pre-freeze'
+const arguments_ = process.argv.slice(2)
+const cutoverIndex = arguments_.indexOf('--cutover-sql')
+let cutoverDirectory = null
+if (cutoverIndex !== -1) {
+    assert(arguments_[cutoverIndex + 1] && !arguments_[cutoverIndex + 1].startsWith('--'), '--cutover-sql requires the explicit ignored SQL directory')
+    cutoverDirectory = path.resolve(arguments_[cutoverIndex + 1])
+    arguments_.splice(cutoverIndex, 2)
+}
+assert(arguments_.length <= 2 && arguments_.every(argument => !argument.startsWith('--')), 'Usage: verify-production-backup.mjs [backup-directory] [prefix] [--cutover-sql ignored-directory]')
+const directory = path.resolve(arguments_[0] || path.join(root, 'supabase/backups/production-cutover-20261116'))
+const prefix = arguments_[1] || 'pre-freeze'
 assert.match(prefix, /^[a-z][a-z0-9-]*$/)
 const stack = process.env.REHEARSAL_STACK_ID || 'profile-stage7-stack'
 const container = process.env.REHEARSAL_PG_CONTAINER || `supabase_db_${stack}`
 const expectedProject = 'nvunhhyxbbjqgzdhodrw'
-const reportPath = path.join(directory, `${prefix}-verification.json`)
+const reportPath = path.join(directory, `${prefix}${cutoverDirectory ? '-cutover' : ''}-verification.json`)
 const errorPath = path.join(directory, `${prefix}-verification-error.log`)
 const sha = data => createHash('sha256').update(data).digest('hex')
 const readJson = async file => JSON.parse(await readFile(file, 'utf8'))
@@ -76,6 +85,74 @@ async function catalog(expected) {
         'policies',(select coalesce(jsonb_agg(to_jsonb(p) order by schemaname,tablename,policyname),'[]') from pg_policies p where schemaname in (select jsonb_array_elements_text(${literal(JSON.stringify(schemas))}::jsonb))),
         'functions',(select jsonb_agg(jsonb_build_object('signature',p.oid::regprocedure::text,'owner',pg_get_userbyid(p.proowner),'acl',p.proacl::text,'definition_md5',md5(pg_get_functiondef(p.oid))) order by p.oid::regprocedure::text)
             from pg_proc p where p.oid in (select to_regprocedure(v) from jsonb_array_elements_text(${literal(JSON.stringify(functions))}::jsonb) a(v))))`)
+}
+
+const storagePrivileges = () => value(database, `select jsonb_agg(jsonb_build_object('role',r,'privilege',p,'allowed',has_table_privilege(r,'storage.objects',p)) order by r,p)
+    from unnest(array['anon','authenticated','service_role']) roles(r) cross join unnest(array['INSERT','UPDATE','DELETE']) privileges(p)`)
+
+async function verifyFrozen(snapshot, originalStoragePrivileges) {
+    same(await storagePrivileges(), originalStoragePrivileges, 'Freeze must leave managed Storage ACLs unchanged')
+    assert.equal(await value(database, `select bool_and(not has_function_privilege(r,'public.save_site(jsonb,jsonb)','EXECUTE')) from unnest(array['anon','authenticated','service_role']) roles(r)`), true, 'Old save RPC must be disabled for every API role')
+    assert.equal(await value(database, `select bool_and(not has_table_privilege(r,t,p)) from unnest(array['anon','authenticated','service_role']) roles(r)
+        cross join unnest(array['public.profile','public.theme','public.sections','public.keywords','public.feed_images']) tables(t)
+        cross join unnest(array['INSERT','UPDATE','DELETE']) privileges(p)`), true, 'Legacy application tables must reject API-role writes')
+    assert.equal(await value(database, `select count(*) from pg_trigger where tgrelid='storage.objects'::regclass and not tgisinternal and tgname in ('cutover_freeze_object_writes','cutover_freeze_object_truncate') and tgenabled='O'`), 2)
+    assert.equal(await value(database, `select not prosecdef and proconfig @> array['search_path=""'] from pg_proc where oid='private.cutover_block_site_images()'::regprocedure`), true)
+    assert.equal(await value(database, `select bool_and(not has_function_privilege(r,'private.cutover_block_site_images()','EXECUTE')) from unnest(array['anon','authenticated','service_role']) roles(r)`), true, 'The trigger function is not a public API')
+    const existing = snapshot.storage.find(row => row.bucket_id === 'site-images')
+    assert(existing?.id, 'An original object is required for concrete freeze probes')
+    const probeName = `profile/cutover-probe-${randomUUID()}.png`
+    async function denied(role, command, { mustTrigger = false, before = '' } = {}) {
+        let output
+        try {
+            output = await sql(database, `begin; set local storage.allow_delete_query='true'; ${before} set local role ${role}; set local "request.jwt.claim.sub"='f711da08-9c0b-42ee-a20c-a4f83ad46473'; ${command}; rollback;`)
+        } catch (error) {
+            assert.match(error.message, mustTrigger ? /cutover_storage_writes_paused/ : /cutover_storage_writes_paused|permission denied for table objects|row-level security policy/)
+            return
+        }
+        assert(!mustTrigger && output === '0', `Frozen ${role} writes must be denied or affect zero rows`)
+    }
+    // Every probe is rolled back. The BYPASSRLS service_role must hit the trigger;
+    // ordinary API roles can also be filtered to zero rows by restrictive RLS.
+    for (const role of ['anon', 'authenticated', 'service_role']) {
+        for (const command of [
+            `with changed as (insert into storage.objects(bucket_id,name) values('site-images',${literal(probeName)}) returning id) select count(*) from changed`,
+            `with changed as (update storage.objects set name=name where id=${literal(existing.id)} returning id) select count(*) from changed`,
+            `with changed as (delete from storage.objects where id=${literal(existing.id)} returning id) select count(*) from changed`,
+        ]) await denied(role, command, { mustTrigger: role === 'service_role' })
+        await denied(role, "truncate storage.objects; select 'truncate_was_not_blocked'", { mustTrigger: role === 'service_role' })
+        await assert.rejects(() => sql(database, `begin; set local role ${role}; select public.save_site('{}'::jsonb,'{}'::jsonb); rollback;`), /permission denied for function save_site/, `Frozen ${role} legacy save must actually fail`)
+    }
+    const otherBucket = `cutover-probe-${randomUUID()}`
+    const otherObject = randomUUID()
+    const before = `insert into storage.buckets(id,name) values(${literal(otherBucket)},${literal(otherBucket)});`
+    await denied('service_role', `with changed as (update storage.objects set bucket_id=${literal(otherBucket)} where id=${literal(existing.id)} returning id) select count(*) from changed`, { before, mustTrigger: true })
+    await denied('service_role', `with changed as (update storage.objects set bucket_id='site-images' where id=${literal(otherObject)} returning id) select count(*) from changed`, {
+        before: `${before} insert into storage.objects(id,bucket_id,name) values(${literal(otherObject)},${literal(otherBucket)},${literal(probeName)});`, mustTrigger: true,
+    })
+    const outside = await sql(database, `begin; set local storage.allow_delete_query='true'; ${before} set local role service_role;
+        with changed as (insert into storage.objects(bucket_id,name) values(${literal(otherBucket)},${literal(probeName)}) returning id) select count(*) from changed;
+        with changed as (update storage.objects set name=name where bucket_id=${literal(otherBucket)} returning id) select count(*) from changed;
+        with changed as (delete from storage.objects where bucket_id=${literal(otherBucket)} returning id) select count(*) from changed;
+        rollback;`)
+    assert.equal(outside, '1\n1\n1', 'Unrelated buckets retain their original write behavior')
+    same(sorted(await value(database, `select coalesce(jsonb_agg(to_jsonb(o) order by bucket_id,name),'[]') from storage.objects o`), row => `${row.bucket_id}/${row.name}`), sorted(snapshot.storage, row => `${row.bucket_id}/${row.name}`), 'All freeze probes preserve original object metadata')
+}
+
+async function cutoverSql() {
+    const target = await realpath(cutoverDirectory)
+    assert(['supabase/.temp', 'supabase/backups'].some(relative => target.startsWith(path.join(root, relative) + path.sep)), 'Cutover SQL must be in an ignored local task directory')
+    const result = {}
+    for (const name of ['freeze', 'migrate', 'enable']) {
+        const file = await realpath(path.join(target, `${name}.sql`))
+        assert(file.startsWith(target + path.sep))
+        result[name] = await readFile(file, 'utf8')
+        assert.match(result[name], /^\s*set role postgres;\s*begin;/i, 'Execute cutover as the restored application owner inside a transaction')
+        assert(!/^\s*\\(?:connect|c\s)/m.test(result[name]), 'Connection changes are forbidden')
+    }
+    assert.equal((result.migrate.match(/^begin;\s*$/gmi) || []).length, 1, 'Combined migration must have one outer transaction')
+    assert.equal((result.migrate.match(/^commit;\s*$/gmi) || []).length, 1, 'Combined migration must commit only once')
+    return result
 }
 
 async function verifyBinaries(snapshot) {
@@ -149,17 +226,41 @@ try {
     same(sorted(beforeStorage, row => `${row.bucket_id}/${row.name}`), sorted(snapshot.storage, row => `${row.bucket_id}/${row.name}`), 'Original Storage object metadata')
     same(await value(database, `select coalesce(jsonb_agg(to_jsonb(b) order by id),'[]') from storage.buckets b`), sorted(snapshot.buckets, row => row.id), 'Original bucket metadata')
     same(await normalizedCatalog(await catalog(snapshot.catalog)), await normalizedCatalog(snapshot.catalog), 'Original owners, ACLs, RLS, policies and function definitions')
+    const originalStoragePrivileges = await storagePrivileges()
+    const cutover = cutoverDirectory ? await cutoverSql() : null
+    if (cutover) {
+        phase = 'server-side production freeze rehearsal'
+        await restore(cutover.freeze, 'cutover freeze')
+        await verifyFrozen(snapshot, originalStoragePrivileges)
+        same(await value(database, 'select public.load_site()'), snapshot.site, 'Freezing must preserve original content')
+    }
     phase = 'full production-copy migration'
-    await applyStructure(database)
-    await applyApi(database, { activated: false })
+    if (cutover) await restore(cutover.migrate, 'atomic cutover migration')
+    else {
+        await applyStructure(database)
+        await applyApi(database, { activated: false })
+    }
     same(await value(database, 'select public.load_character(1)'), snapshot.site, 'Four migrations preserve the original character exactly')
     same(await value(database, `select coalesce(jsonb_agg(to_jsonb(o) order by bucket_id,name),'[]') from storage.objects o`), beforeStorage, 'Migration preserves original Storage metadata')
     assert.equal(await value(database, 'select writes_enabled from private.character_api_control where id=1'), false, 'New writes remain closed until cutover verification')
+    if (cutover) {
+        phase = 'cutover write reactivation rehearsal'
+        await restore(cutover.enable, 'cutover write enable')
+        assert.equal(await value(database, 'select writes_enabled from private.character_api_control where id=1'), true, 'Explicit verified activation opens the new write gate')
+        assert.equal(await value(database, `select count(*) from pg_policies where schemaname='storage' and tablename='objects' and policyname in ('cutover_freeze_insert','cutover_freeze_update','cutover_freeze_delete')`), 0, 'Only the temporary cutover freeze policies must be removed')
+        assert.equal(await value(database, `select count(*) from pg_trigger where tgrelid='storage.objects'::regclass and not tgisinternal and tgname in ('cutover_freeze_object_writes','cutover_freeze_object_truncate')`), 0, 'Temporary cutover triggers must be removed')
+        assert.equal(await value(database, `select to_regprocedure('private.cutover_block_site_images()') is null`), true, 'Temporary cutover trigger function must be removed')
+        same(await storagePrivileges(), originalStoragePrivileges, 'Reactivation must restore the original effective Storage DML privileges')
+        assert.equal(await value(database, `select bool_and(not has_function_privilege(r,'public.save_site(jsonb,jsonb)','EXECUTE')) from unnest(array['anon','authenticated','service_role']) roles(r)`), true, 'Old global save stays disabled after cutover')
+        same(await value(database, 'select public.load_character(1)'), snapshot.site, 'Write activation must preserve original data')
+    }
     const binaries = await verifyBinaries(snapshot)
     const report = {
         project_id: expectedProject, verified_at: new Date().toISOString(), target: 'isolated-local-postgresql-17',
         sourcePrefix: prefix, schemaSha256: sha(schema), dataSha256: sha(data),
         legacyRowsCatalogSequencesVerified: true, originalOwnerAclVerified: true, allFourMigrationsVerified: true,
+        cutoverFreezeAtomicMigrationEnableVerified: Boolean(cutover),
+        ...(cutover ? { cutoverSqlSha256: Object.fromEntries(Object.entries(cutover).map(([name, content]) => [name, sha(content)])) } : {}),
         authStorageSchemasRestored: true, globalRolesModified: false, binaries,
     }
     await writeFile(reportPath, JSON.stringify(report, null, 4))
