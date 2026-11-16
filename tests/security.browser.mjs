@@ -74,6 +74,7 @@ async function stopProcess(child) {
 }
 let temp, build, chrome, server, ws, cdp, js, appUrl, launchError
 let buildLogs = ''
+const chromeDiagnostics = { executable: '', exitCode: null, signal: null, stderr: '' }
 try {
     const chromePath = await findChrome()
     const config = JSON.parse(await fs.readFile(path.join(project, 'vercel.json'), 'utf8'))
@@ -160,17 +161,22 @@ try {
             && (route === bundlePath ? response.headers.get('content-type')?.startsWith('application/javascript') && !body.startsWith('<') : body === index), `${route} 프로덕션 응답·보안 헤더·rewrite 정상`)
     }
     const debugPort = await freePort()
+    chromeDiagnostics.executable = chromePath
     chrome = spawn(chromePath, [
-        '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        '--headless=new', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
         '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-default-apps',
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
         `--remote-debugging-port=${debugPort}`, `--user-data-dir=${path.join(temp, 'chrome')}`, 'about:blank',
-    ], { windowsHide: true, stdio: 'ignore' })
+    ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    chrome.stderr.on('data', chunk => { chromeDiagnostics.stderr = (chromeDiagnostics.stderr + chunk.toString()).slice(-6000) })
     chrome.on('error', error => { launchError = error })
+    chrome.on('exit', (code, signal) => { chromeDiagnostics.exitCode = code; chromeDiagnostics.signal = signal })
     let target
-    for (let attempt = 0; attempt < 100; attempt++) {
+    const chromeDeadline = Date.now() + 30000
+    while (Date.now() < chromeDeadline) {
         checkDeadline()
         if (launchError) throw launchError
+        if (chrome.exitCode !== null || chrome.signalCode !== null) throw new Error('Chrome exited before its debugging endpoint was ready')
         try {
             target = (await (await fetch(`http://127.0.0.1:${debugPort}/json`, { signal: AbortSignal.timeout(2000) })).json()).find(entry => entry.type === 'page')
             if (target) break
@@ -409,7 +415,7 @@ try {
     console.log(JSON.stringify({ passed: passed.length, checks: passed, mockedExternal: mockedExternal.length, unexpectedExternal, errors }, null, 2))
 } catch (error) {
     const diagnostics = js ? await js('({path:location.pathname,text:document.body.innerText,violations:window.__policyViolations})').catch(() => null) : null
-    console.error(JSON.stringify({ passed: passed.length, checks: passed, errors, diagnostics, unexpectedExternal, securityLogs, buildLogs, failure: error.stack, cause: error.cause?.message }, null, 2))
+    console.error(JSON.stringify({ passed: passed.length, checks: passed, errors, diagnostics, unexpectedExternal, securityLogs, buildLogs, chromeDiagnostics, failure: error.stack, cause: error.cause?.message }, null, 2))
     process.exitCode = 1
 } finally {
     if (cdp) { try { await Promise.race([cdp('Browser.close'), pause(1000)]) } catch {} }

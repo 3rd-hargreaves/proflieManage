@@ -178,6 +178,7 @@ const listen = server => new Promise(resolve=>server.listen(0,'127.0.0.1',()=>re
 const freePort = async()=>{const server=http.createServer();const port=await listen(server);await new Promise(r=>server.close(r));return port}
 let vite,chrome,ws,temp
 let launchError
+const chromeDiagnostics = { executable: '', exitCode: null, signal: null, stderr: '' }
 const pending = new Map()
 let viteLogs=''
 let cdp,js
@@ -194,10 +195,14 @@ try {
     vite.on('error',error=>{launchError=error})
     for(const stream of [vite.stdout,vite.stderr])stream.on('data',chunk=>{viteLogs=(viteLogs+chunk.toString()).slice(-3000)})
     for(let i=0;i<100;i++){checkDeadline();if(launchError)throw launchError;try{if((await fetch(appUrl,{signal:AbortSignal.timeout(3000)})).ok)break}catch{} await pause(100);if(i===99)throw new Error(`Vite did not start: ${viteLogs}`)}
-    chrome=spawn(chromePath,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check',`--remote-debugging-port=${debugPort}`,`--user-data-dir=${path.join(temp,'chrome')}`,'about:blank'],{windowsHide:true,stdio:'ignore'})
+    chromeDiagnostics.executable = chromePath
+    chrome=spawn(chromePath,['--headless=new','--disable-gpu','--disable-dev-shm-usage','--no-first-run','--no-default-browser-check',`--remote-debugging-port=${debugPort}`,`--user-data-dir=${path.join(temp,'chrome')}`,'about:blank'],{windowsHide:true,stdio:['ignore','ignore','pipe']})
+    chrome.stderr.on('data', chunk => { chromeDiagnostics.stderr = (chromeDiagnostics.stderr + chunk.toString()).slice(-6000) })
     chrome.on('error',error=>{launchError=error})
+    chrome.on('exit', (code, signal) => { chromeDiagnostics.exitCode = code; chromeDiagnostics.signal = signal })
     let target
-    for(let i=0;i<100;i++){checkDeadline();if(launchError)throw launchError;try{target=(await fetchJson(`http://127.0.0.1:${debugPort}/json`)).find(t=>t.type==='page');if(target)break}catch{}await pause(100)}
+    const chromeDeadline = Date.now() + 30000
+    while(Date.now()<chromeDeadline){checkDeadline();if(launchError)throw launchError;if(chrome.exitCode!==null||chrome.signalCode!==null)throw new Error('Chrome exited before its debugging endpoint was ready');try{target=(await fetchJson(`http://127.0.0.1:${debugPort}/json`)).find(t=>t.type==='page');if(target)break}catch{}await pause(100)}
     if(!target)throw new Error('Chrome did not start; set CHROME_PATH to a Chromium executable')
     ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('CDP connection timed out')),10000);ws.addEventListener('open',()=>{clearTimeout(timer);resolve()},{once:true});ws.addEventListener('error',()=>{clearTimeout(timer);reject(new Error('CDP connection failed'))},{once:true})})
     let sequence=0
@@ -662,8 +667,8 @@ try {
         && !await js(`!!document.querySelector('main .dragHandle') || !!document.querySelector('[data-theme]')`), '명시적 로그아웃 승인 시 메인 초안 폐기하고 저장된 공개 순서·테마만 표시')
 
     await reset(true, '/'); sites.delete(2); order = [1]; await navigate('/')
-    await until(`document.querySelectorAll('.character').length===1`, 'single main character')
-    check(await js(`document.querySelector('main .dragHandle').disabled && ${orderButton}?.disabled`), '캐릭터 한 개에서는 순서 이동·불필요한 순서 저장 비활성')
+    await until(`document.querySelectorAll('.character').length===1 && !!document.querySelector('main .dragHandle')`, 'single main character and lazy sorting controls')
+    check(await js(`document.querySelector('main .dragHandle')?.disabled===true && ${orderButton}?.disabled`), '캐릭터 한 개에서는 순서 이동·불필요한 순서 저장 비활성')
     sites.clear(); order = []; await navigate('/'); await until(`document.body.innerText.includes('등록된 캐릭터가 없습니다') && !!document.querySelector('[data-theme]')`, 'empty admin collection')
     check(await js(`!document.querySelector('.character') && !!document.querySelector('a[href="/characters/new"]')`), '빈 관리자 메인도 캐릭터 추가·메인 테마 편집 접근 가능')
     await set('[data-theme="--main-color"]', '#224466'); await button('^테마 저장$'); await untilRequests(() => mainTheme.main_color === '#224466', 'empty main theme save'); await mainUnlocked()
@@ -695,7 +700,7 @@ try {
     check(errors.length===0,'브라우저 실행 예외 없음')
     console.log(JSON.stringify({phase,passed:passed.length,checks:passed,errors},null,2))
 } catch(error) {
-    const diagnostics=js?await js(`({url:location.pathname,buttons:[...document.querySelectorAll('button')].map(b=>({text:b.textContent,disabled:b.matches(':disabled')}))})`).catch(()=>null):null;console.error(JSON.stringify({phase,passed:passed.length,checks:passed,errors,diagnostics,dialogs,viteLogs,requests:requests.slice(-12).map(r=>({method:r.method,path:r.path,body:r.body,cancelled:r.cancelled})),failure:error.stack},null,2));process.exitCode=1
+    const diagnostics=js?await js(`({url:location.pathname,buttons:[...document.querySelectorAll('button')].map(b=>({text:b.textContent,disabled:b.matches(':disabled')}))})`).catch(()=>null):null;console.error(JSON.stringify({phase,passed:passed.length,checks:passed,errors,diagnostics,dialogs,viteLogs,chromeDiagnostics,requests:requests.slice(-12).map(r=>({method:r.method,path:r.path,body:r.body,cancelled:r.cancelled})),failure:error.stack},null,2));process.exitCode=1
 } finally {
     if(cdp){try{await Promise.race([cdp('Browser.close'),pause(1000)])}catch{}}
     for(const task of pending.values())task.reject(new Error('Browser test finished'))
