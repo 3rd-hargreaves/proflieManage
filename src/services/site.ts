@@ -4,7 +4,7 @@ import { isCharacterId, isMainData, isSiteData } from '../utils/siteData'
 
 const loadErrorMessage = '사이트 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.'
 
-async function readRpc(name: 'load_site' | 'load_main' | 'load_character', signal: AbortSignal, args?: { p_character_id: CharacterId }): Promise<unknown> {
+async function readRpc(name: 'load_main' | 'load_character', signal: AbortSignal, args?: { p_character_id: CharacterId }): Promise<unknown> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     signal.throwIfAborted()
     let result
@@ -33,13 +33,5 @@ export async function loadCharacter(characterId: CharacterId, signal: AbortSigna
     if (!isSiteData(data) || data.profile.id !== characterId) {
         throw new Error(loadErrorMessage, { cause: new Error('invalid_character_response') })
     }
-    return data
-}
-
-export async function loadSite(signal: AbortSignal): Promise<SiteData> {
-    // Legacy save/cleanup services retain this until their scoped replacement in stage 5.
-    // New UI reads never fall back to this global single-profile RPC.
-    const data = await readRpc('load_site', signal)
-    if (!isSiteData(data)) throw new Error(loadErrorMessage, { cause: new Error('invalid_site_response') })
     return data
 }

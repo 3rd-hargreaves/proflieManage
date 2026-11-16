@@ -1,10 +1,14 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import CharacterFields from '../components/CharacterFields'
 import { applyTheme, themeFields, toThemeData } from '../utils/theme'
 import { isHexColor } from '../utils/validation'
 import { feedImageLimit } from '../utils/uploadLimits'
 import type { LeaveGuard } from '../hooks/useGuardedNavigation'
 import { useSiteEditor } from '../hooks/useSiteEditor'
+import type { SortLock } from '../utils/sortLock'
+import { reportDraftValidation } from '../utils/formValidation'
+import EditorAuthNotice from '../components/EditorAuthNotice'
+import ImageCleanupNotice from '../components/ImageCleanupNotice'
 
 interface EditPageProps {
     characterId: number
@@ -16,18 +20,22 @@ interface EditPageProps {
     onLeaveGuardChange: (guard: LeaveGuard) => void
     canWrite: () => boolean
     onBusyChange?: (busy: boolean) => void
+    workLock: SortLock
+    onDeleted: (warning: string | null) => void
 }
 
-export default function EditPage({ characterId, signingOut, authNotice, onRetryAuth, onReauthenticate, onExit, onLeaveGuardChange, canWrite, onBusyChange }: EditPageProps) {
+export default function EditPage({ characterId, signingOut, authNotice, onRetryAuth, onReauthenticate, onExit, onLeaveGuardChange, canWrite, onBusyChange, workLock, onDeleted }: EditPageProps) {
+    const form = useRef<HTMLFormElement>(null)
     const {
         baseline, draft, loading, loadError, notFound, focusedSection, editorVersion,
         sorting, sortLock, editingDisabled, change, addSection, reload,
-    } = useSiteEditor({ characterId, signingOut, authBlocked: !!authNotice, canWrite, onLeaveGuardChange })
+        busy, saving, deleting, saveError, reportError, saved, cleanupWarning, clearCleanupWarning, save, remove,
+    } = useSiteEditor({ characterId, signingOut, authBlocked: !!authNotice, canWrite, onLeaveGuardChange, workLock, onDeleted })
 
     useEffect(() => {
-        onBusyChange?.(loading || sorting)
+        onBusyChange?.(loading || sorting || busy)
         return () => onBusyChange?.(false)
-    }, [onBusyChange, loading, sorting])
+    }, [onBusyChange, loading, sorting, busy])
 
     useEffect(() => {
         const previousTitle = document.title
@@ -42,18 +50,8 @@ export default function EditPage({ characterId, signingOut, authNotice, onRetryA
     }, [characterId, theme])
 
     return (
-        <main className="flexColumn gapLg" aria-busy={loading}>
-            {authNotice && (
-                <div className="card pdLg flexColumn gapSm">
-                    <p role={authNotice.checking ? 'status' : 'alert'}>{authNotice.message}</p>
-                    <button className="btn h30 border borderRad" type="button"
-                        disabled={authNotice.checking || sorting || signingOut}
-                        onClick={authNotice.requiresLogin ? onReauthenticate : onRetryAuth}>
-                        {authNotice.checking ? '로그인 확인 중…' : authNotice.requiresLogin ? '다시 로그인' : '다시 확인'}
-                    </button>
-                    <button className="btn h30 border borderRad" type="button" disabled={sorting || signingOut} onClick={onExit}>메인으로</button>
-                </div>
-            )}
+        <main className="flexColumn gapLg" aria-busy={loading || busy}>
+            <EditorAuthNotice notice={authNotice} disabled={busy || sorting || signingOut} onRetry={onRetryAuth} onLogin={onReauthenticate} onExit={onExit} />
             {loading && <p className="card pdLg text3" role="status">수정할 정보를 불러오는 중…</p>}
             {loadError && (
                 <div className="card pdLg flexColumn gapMd">
@@ -64,18 +62,25 @@ export default function EditPage({ characterId, signingOut, authNotice, onRetryA
             {notFound && <p className="card pdLg text3" role="status">캐릭터를 찾을 수 없습니다.</p>}
             {draft && !loading && (
                 <>
-                    <p className="card pdLg text3" id="characterSaveNotice">캐릭터 저장은 준비 중입니다.</p>
-                    <form className="flexColumn gapLg" noValidate onSubmit={event => event.preventDefault()} aria-describedby="characterSaveNotice">
+                    <form ref={form} className="flexColumn gapLg" noValidate onSubmit={event => {
+                        event.preventDefault()
+                        if (form.current && !editingDisabled && !sorting && reportDraftValidation(form.current, draft, baseline?.feed.length ?? 0, reportError)) void save()
+                    }}>
                         <fieldset className="editorFields flexColumn gapLg" disabled={editingDisabled} key={editorVersion}>
                             <CharacterFields draft={draft} change={change} addSection={addSection}
                                 focusedSection={focusedSection} sorting={sorting} sortLock={sortLock}
-                                editingDisabled={editingDisabled} maxFeedCount={feedImageLimit(baseline?.feed.length ?? 0)} saveDisabled />
+                                editingDisabled={editingDisabled} maxFeedCount={feedImageLimit(baseline?.feed.length ?? 0)} saving={saving} />
                         </fieldset>
                     </form>
-                    <div className="flexColumn gapSm">
-                        <p className="text3" id="characterDeleteNotice">캐릭터 삭제는 준비 중입니다.</p>
-                        <button className="btn h30 border borderRad widthFull" type="button" disabled aria-describedby="characterDeleteNotice">캐릭터 삭제</button>
-                    </div>
+                    {saved && <p role="status">저장 성공</p>}
+                    {saveError && <div className="card pdLg flexColumn gapSm">
+                        <p role="alert">{saveError}</p>
+                        <button className="btn border borderRad pdSm" type="button" disabled={editingDisabled || sorting} onClick={reload}>편집 내용을 버리고 DB에서 다시 불러오기</button>
+                    </div>}
+                    <ImageCleanupNotice message={cleanupWarning} workLock={workLock} sortLock={sortLock} canWrite={canWrite} blocked={!!authNotice || signingOut} onCleared={clearCleanupWarning} />
+                    <button className="btn h30 border borderRad widthFull" type="button" disabled={editingDisabled || sorting} onClick={() => void remove()}>
+                        {deleting ? '삭제 중…' : '캐릭터 삭제'}
+                    </button>
                 </>
             )}
         </main>

@@ -43,6 +43,7 @@ secondSite.theme = { ...site.theme, id: 2, main_color: '#2468ac' }
 secondSite.sections = site.sections.map(section => ({ ...section, id: section.id + 100, title: '두 번째 섹션' }))
 secondSite.keywords = site.keywords.map(keyword => ({ ...keyword, id: keyword.id + 100 }))
 secondSite.feed = site.feed.map(feed => ({ ...feed, id: feed.id + 100, image_path: 'feed/2/security.png' }))
+let currentSecondSite = structuredClone(secondSite)
 const mainTheme = { ...site.theme, main_color: '#c34f78' }
 const mainData = { characters: [secondSite, site].map((entry, index) => ({ ...entry.profile, sort_order: index + 1 })), theme: mainTheme }
 const check = (condition, label) => { assert.ok(condition, label); passed.push(label) }
@@ -206,7 +207,22 @@ try {
         if (url.origin === apiOrigin) {
             if (request.method === 'OPTIONS') { await fulfill(204, 'text/plain'); return }
             if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/load_main') { await fulfill(200, 'application/json', JSON.stringify(mainData)); return }
-            if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/load_character') { const id = Number(JSON.parse(request.postData || '{}').p_character_id); await fulfill(200, 'application/json', JSON.stringify(id === 1 ? site : id === 2 ? secondSite : null)); return }
+            if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/load_character') { const id = Number(JSON.parse(request.postData || '{}').p_character_id); await fulfill(200, 'application/json', JSON.stringify(id === 1 ? site : id === 2 ? currentSecondSite : null)); return }
+            if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/load_image_references') {
+                const refs = [site, currentSecondSite].flatMap(entry => [entry.profile.profile_image_path, ...entry.feed.map(row => row.image_path)]).filter(Boolean)
+                await fulfill(200, 'application/json', JSON.stringify([...new Set(refs)])); return
+            }
+            if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/save_character') {
+                const body = JSON.parse(request.postData || '{}'), id = Number(body.p_character_id), data = body.p_data
+                if (id !== 2) throw new Error('Unexpected security write target')
+                const oldProfile = currentSecondSite.profile.profile_image_path
+                currentSecondSite = { profile: { id, ...data.profile }, theme: { id, ...data.theme },
+                    ...Object.fromEntries(['sections', 'keywords', 'feed'].map(key => [key, data[key].map((row, index) => ({ ...row, id: row.id ?? 900 + index, sort_order: index + 1 }))])) }
+                await fulfill(200, 'application/json', JSON.stringify({ character: currentSecondSite, cleanup_candidates: oldProfile === currentSecondSite.profile.profile_image_path ? [] : [oldProfile] })); return
+            }
+            if (request.method === 'POST' && url.pathname.startsWith('/storage/v1/object/site-images/')) { await fulfill(200, 'application/json', JSON.stringify({ Key: url.pathname.split('/object/')[1] })); return }
+            if (request.method === 'DELETE' && url.pathname === '/storage/v1/object/site-images') { await fulfill(200, 'application/json', '[]'); return }
+            if (request.method === 'POST' && url.pathname === '/storage/v1/object/list/site-images') { await fulfill(200, 'application/json', '[]'); return }
             if (request.method === 'POST' && url.pathname === '/auth/v1/token') { await fulfill(200, 'application/json', JSON.stringify(session)); return }
             if (request.method === 'GET' && url.pathname === '/auth/v1/user') { await fulfill(200, 'application/json', JSON.stringify(user)); return }
             if (request.method === 'GET' && url.pathname.startsWith('/storage/v1/object/public/site-images/')) { await fulfill(200, 'image/png', image); return }
@@ -321,7 +337,7 @@ try {
         await navigate(route); await until('!!document.querySelector("#profileName")', `${route} authenticated direct entry`)
         check(await js(`location.pathname === ${JSON.stringify(route)} && document.querySelector('#profileName').value === ${JSON.stringify(route.includes('/2/') ? secondSite.profile.name : site.profile.name)}`), `${route} 인증된 직접 진입은 rewrite와 편집 bundle 정상`)
     }
-    check(await js(`document.querySelector('button[type=submit]').matches(':disabled')`), 'production 읽기 연결 단계에서 기존 저장 API로 제출하지 않음')
+    check(await js(`!document.querySelector('button[type=submit]').matches(':disabled')`), 'production 대상 캐릭터 저장 활성화')
     const { root } = await cdp('DOM.getDocument'), { nodeId } = await cdp('DOM.querySelector', { nodeId: root.nodeId, selector: '#profileFile' })
     await cdp('DOM.setFileInputFiles', { nodeId, files: [picture] })
     await until(`document.querySelector('img[alt="프로필 이미지 미리보기"]')?.src.startsWith('blob:') && document.querySelector('img[alt="프로필 이미지 미리보기"]').naturalWidth === 1`, 'blob profile preview')
@@ -336,8 +352,18 @@ try {
             await fs.writeFile(path.join(path.resolve(process.env.PROFILE_SCREENSHOT_DIR), `editor-${width}.png`), Buffer.from(data, 'base64'))
         }
     }
+    const saveDocument = await cdp('DOM.getDocument'), saveInput = await cdp('DOM.querySelector', { nodeId: saveDocument.root.nodeId, selector: '#profileFile' })
+    await cdp('DOM.setFileInputFiles', { nodeId: saveInput.nodeId, files: [picture] })
+    await until(`document.querySelector('img[alt="프로필 이미지 미리보기"]')?.src.startsWith('blob:')`, 'production save preview')
+    const beforeProductionSave = mockedExternal.length
+    await js(`document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`)
+    await until(`document.body.innerText.includes('저장 성공')`, 'production scoped image save')
+    check(mockedExternal.slice(beforeProductionSave).some(request => request.path === '/rest/v1/rpc/save_character')
+        && mockedExternal.slice(beforeProductionSave).some(request => request.method === 'POST' && request.path.startsWith('/storage/v1/object/site-images/profile/2/')),
+        'production CSP 아래 대상 namespace 이미지 업로드·캐릭터 저장 RPC 정상')
+    check(await js('window.__policyViolations.length === 0'), '캐릭터 저장과 이미지 정리도 허용된 연결만 사용')
     await Promise.all(handlers)
-    check(unexpectedExternal.length === 0 && !mockedExternal.some(request => request.path.startsWith('/rest/v1/') && !/\/rpc\/load_(main|character)$/.test(request.path) || request.path.startsWith('/storage/') && request.method !== 'GET'), '실제 외부 연결·DB 저장·Storage 쓰기 없이 허용 요청을 모두 mock 처리')
+    check(unexpectedExternal.length === 0 && !mockedExternal.some(request => /\/rpc\/(load_site|save_site)$/.test(request.path) || request.path.startsWith('/rest/v1/') && !request.path.startsWith('/rest/v1/rpc/')), '실제 외부 DB·Storage 접속 없이 새 RPC·이미지 쓰기를 모두 mock 처리')
     check(errors.length === 0, 'production 브라우저 실행 예외 없음')
     console.log(JSON.stringify({ passed: passed.length, checks: passed, mockedExternal: mockedExternal.length, unexpectedExternal, errors }, null, 2))
 } catch (error) {

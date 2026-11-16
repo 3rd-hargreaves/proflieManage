@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const phase = 4
+const phase = 5
 async function findChrome() {
     const candidates = process.env.CHROME_PATH ? [process.env.CHROME_PATH] : process.platform === 'win32'
         ? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe')]
@@ -21,8 +21,8 @@ async function findChrome() {
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const fetchJson = async url => (await fetch(url, { signal: AbortSignal.timeout(3000) })).json()
-const deadline = Date.now() + 180000
-const checkDeadline = () => { if (Date.now() > deadline) throw new Error('Browser regression exceeded its 3 minute deadline') }
+const deadline = Date.now() + 240000
+const checkDeadline = () => { if (Date.now() > deadline) throw new Error('Browser regression exceeded its 4 minute deadline') }
 const passed = []
 const errors = []
 const user = { id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.test', aud: 'authenticated', role: 'authenticated', app_metadata: { provider: 'email' }, user_metadata: {}, created_at: '2026-01-01T00:00:00Z' }
@@ -39,6 +39,20 @@ const initial = (id = 1) => ({
 const mainTheme = { id: 1, main_color: '#c34f78', background_color: '#ffedf4', card_background_color: '#fffafc', typo_color: '#221122' }
 let sites = new Map([[1, initial(1)], [2, initial(2)]])
 let mode = { userStatus: 200, userDelay: 0, tokenDelay: 0 }
+let order = [2, 1], nextCharacterId = 3, nextChildId = 1000
+let reservations = new Map(), creations = new Map(), deletions = new Map()
+const references = () => [...new Set([...sites.values()].flatMap(site => [site.profile.profile_image_path, ...site.feed.map(row => row.image_path)]).filter(Boolean))]
+let objects = new Set(references())
+const dataContent = data => JSON.stringify({
+    profile: { name: data.profile.name, status_message: data.profile.status_message, profile_image_path: data.profile.profile_image_path },
+    theme: Object.fromEntries(Object.entries(data.theme).filter(([key]) => key !== 'id')),
+    ...Object.fromEntries(['sections', 'keywords', 'feed'].map(key => [key, data[key].map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !['id', 'sort_order'].includes(key))))])),
+})
+const writtenSite = (id, data) => ({
+    profile: { id, ...data.profile }, theme: { id, ...data.theme },
+    ...Object.fromEntries(['sections', 'keywords', 'feed'].map(key => [key, data[key].map((row, index) => ({ ...row, id: row.id ?? nextChildId++, sort_order: index + 1 }))])),
+})
+const candidates = before => [...new Set([before.profile.profile_image_path, ...before.feed.map(row => row.image_path)].filter(Boolean))].filter(path => !references().includes(path))
 const requests = []
 const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64')
 const api = http.createServer(async (req, res) => {
@@ -48,16 +62,22 @@ const api = http.createServer(async (req, res) => {
     const entry = { method: req.method, path: url.pathname, body: null }; requests.push(entry)
     if (raw) { try { entry.body = JSON.parse(raw) } catch {} }
     res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
     const send = (status, data) => { if (res.destroyed) return; res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(data === undefined ? undefined : JSON.stringify(data)) }
+    const loseResponse = async () => {
+        // Send headers first so Chromium cannot transparently replay a closed
+        // keep-alive socket before exposing the ambiguous result to the app.
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.write('{')
+        await pause(20); res.destroy()
+    }
     if (url.pathname === '/auth/v1/user') { const status = mode.userStatus; await pause(mode.userDelay); send(status, status === 200 ? user : { code: status === 401 ? 'bad_jwt' : 'unexpected_failure', msg: 'Mock verification failure' }); return }
     if (url.pathname === '/auth/v1/token') { const status = mode.tokenStatus ?? 200; await pause(mode.tokenDelay); send(status, status === 200 ? session() : { error: 'invalid_grant', error_code: 'invalid_credentials', msg: 'Invalid login credentials' }); return }
     if (url.pathname === '/auth/v1/logout') { send(204); return }
     if (url.pathname === '/rest/v1/rpc/load_main' || url.pathname === '/rest/v1/rpc/load_character') {
         const id = Number(entry.body?.p_character_id)
         const isMain = url.pathname.endsWith('/load_main')
-        const data = structuredClone(isMain ? { characters: mode.empty ? [] : [2, 1].filter(id => sites.has(id)).map(id => ({ ...sites.get(id).profile, sort_order: id === 2 ? 1 : 2 })), theme: mainTheme } : sites.get(id) ?? null)
+        const data = structuredClone(isMain ? { characters: mode.empty ? [] : order.filter(id => sites.has(id)).map((id, index) => ({ ...sites.get(id).profile, sort_order: index + 1 })), theme: mainTheme } : sites.get(id) ?? null)
         const status = isMain ? mode.mainStatus ?? 200 : mode.characterStatus?.[id] ?? 200
         const delay = isMain ? mode.mainDelay ?? 0 : mode.characterDelay?.[id] ?? 0
         entry.characterId = isMain ? null : id
@@ -66,6 +86,65 @@ const api = http.createServer(async (req, res) => {
         await pause(delay)
         send(status, status === 200 ? data : { code: 'unexpected_failure', message: 'Mock snapshot failure' })
         return
+    }
+    if (url.pathname === '/rest/v1/rpc/load_image_references') { send(mode.refStatus ?? 200, mode.refStatus ? { message: 'Mock reference failure' } : references()); return }
+    if (url.pathname === '/rest/v1/rpc/reserve_character_id') {
+        const requestId = entry.body.p_request_id
+        if (!reservations.has(requestId)) reservations.set(requestId, nextCharacterId++)
+        send(200, reservations.get(requestId)); return
+    }
+    if (url.pathname === '/rest/v1/rpc/create_character') {
+        await pause(mode.createDelay ?? 0)
+        const { p_character_id: rawId, p_request_id: requestId, p_data: data } = entry.body
+        const id = Number(rawId), receipt = creations.get(requestId)
+        if (receipt) { send(receipt.payload === JSON.stringify(data) ? 200 : 400, receipt.payload === JSON.stringify(data) ? receipt.result : { code: 'P0001', message: 'creation_request_conflict' }); return }
+        if (reservations.get(requestId) !== id) { send(400, { code: '22023', message: 'invalid_creation_request' }); return }
+        const site = writtenSite(id, data); sites.set(id, site); order.push(id)
+        const result = { character: site, cleanup_candidates: [] }
+        creations.set(requestId, { payload: JSON.stringify(data), result: structuredClone(result) })
+        if (mode.createDropResponse) { mode.createDropResponse = false; await loseResponse(); return }
+        send(200, result); return
+    }
+    if (url.pathname === '/rest/v1/rpc/save_character') {
+        await pause(mode.saveDelay ?? 0)
+        const id = Number(entry.body.p_character_id), current = sites.get(id), data = entry.body.p_data
+        if (!current) { send(400, { code: 'P0001', message: 'character_not_found' }); return }
+        if (mode.saveFailure || (JSON.stringify(current) !== JSON.stringify(entry.body.p_expected) && dataContent(current) !== dataContent(data))) { send(400, { code: 'P0001', message: mode.saveFailure || 'character_conflict' }); return }
+        if (dataContent(current) !== dataContent(data)) sites.set(id, writtenSite(id, data))
+        const result = { character: sites.get(id), cleanup_candidates: candidates(entry.body.p_expected) }
+        if (mode.saveDropResponse) { mode.saveDropResponse = false; await loseResponse(); return }
+        send(200, result); return
+    }
+    if (url.pathname === '/rest/v1/rpc/delete_character') {
+        await pause(mode.deleteDelay ?? 0)
+        const id = Number(entry.body.p_character_id), receipt = deletions.get(id), current = sites.get(id)
+        if (receipt) { send(200, receipt); return }
+        if (!current || JSON.stringify(current) !== JSON.stringify(entry.body.p_expected)) { send(400, { code: 'P0001', message: current ? 'character_conflict' : 'character_not_found' }); return }
+        sites.delete(id); order = order.filter(entry => entry !== id)
+        const result = { character_id: id, cleanup_candidates: candidates(current) }; deletions.set(id, result)
+        if (mode.deleteDropResponse) { mode.deleteDropResponse = false; await loseResponse(); return }
+        send(200, result); return
+    }
+    if (url.pathname.startsWith('/storage/v1/object/site-images/') && req.method === 'POST') {
+        const imagePath = decodeURIComponent(url.pathname.split('/site-images/')[1]); entry.uploadPath = imagePath
+        entry.uploadBytes = Buffer.concat(chunks)
+        await pause(mode.uploadDelay ?? 0)
+        if (mode.uploadFailure) { mode.uploadFailure = false; send(500, { error: 'Mock upload failure' }); return }
+        objects.add(imagePath); send(200, { Key: `site-images/${imagePath}` }); return
+    }
+    if (url.pathname === '/storage/v1/object/site-images' && req.method === 'DELETE') {
+        await pause(mode.cleanupDelay ?? 0)
+        if (mode.cleanupFailure) { send(500, { error: 'Mock cleanup failure' }); return }
+        const paths = entry.body.prefixes ?? []
+        const retained = references()
+        if (paths.some(path => retained.includes(path))) { send(400, { error: 'Attempted referenced-file deletion' }); return }
+        for (const path of paths) objects.delete(path)
+        send(200, paths.map(name => ({ name }))); return
+    }
+    if (url.pathname === '/storage/v1/object/list/site-images' && req.method === 'POST') {
+        const { prefix = '', search = '', limit = 100, offset = 0 } = entry.body
+        const names = [...objects].filter(path => path.startsWith(`${prefix}/`)).map(path => path.slice(prefix.length + 1)).filter(name => !name.includes('/') && name.includes(search)).sort()
+        send(200, names.slice(offset, offset + limit).map(name => ({ name }))); return
     }
     if (url.pathname.startsWith('/storage/v1/object/public/') && req.method === 'GET') { res.writeHead(200, { 'Content-Type': 'image/png' }); res.end(image); return }
     send(500, { error: 'Unexpected write or legacy request' })
@@ -138,7 +217,9 @@ try {
     const reset = async (authenticated = true, destination = '/characters/1/edit') => {
         mode = { userStatus: 200, userDelay: 0, tokenDelay: 0 }
         sites = new Map([[1, initial(1)], [2, initial(2)]])
+        order = [2, 1]; nextCharacterId = 3; nextChildId = 1000; reservations = new Map(); creations = new Map(); deletions = new Map(); objects = new Set(references())
         acceptDialog = true
+        await js(`Object.keys(localStorage).filter(key=>key.startsWith('profileManage:cleanup:')).forEach(key=>localStorage.removeItem(key))`)
         await js(`sessionStorage.setItem('editor-test-no-session',${JSON.stringify(authenticated ? '0' : '1')})`)
         await navigate(destination)
         acceptDialog = false
@@ -149,6 +230,9 @@ try {
     const refresh = () => js(`void import('/src/lib/supabase.ts').then(({supabase})=>supabase.auth.refreshSession())`)
     const externalSignout = () => js(`void import('/src/lib/supabase.ts').then(({supabase})=>supabase.auth.signOut({scope:'local'}))`)
     const selectFile = async (selector, files = [picture]) => { const { root } = await cdp('DOM.getDocument'); const { nodeId } = await cdp('DOM.querySelector', { nodeId: root.nodeId, selector }); await cdp('DOM.setFileInputFiles', { nodeId, files }); await pause(100) }
+    const submit = () => js(`document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`)
+    const saveReady = () => until(`!!document.querySelector('button[type=submit]:not(:disabled)')`, 'save unlocked')
+    const writeCalls = name => requests.filter(r => r.method === 'POST' && r.path.endsWith('/rpc/'+name))
     const selectedColor = () => js(`getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()`)
     const readRequests = () => requests.filter(r => r.method === 'POST' && /\/rpc\/load_(main|character)$/.test(r.path))
 
@@ -215,9 +299,9 @@ try {
     await until(`document.querySelector('.profileName')?.textContent==='둘째 캐릭터'`, 'admin second profile')
     check(await js(`document.querySelector('.headerEditLink').getAttribute('href')==='/characters/2/edit'`), '수정 링크가 현재 캐릭터 ID로 연결')
     await nativeClick('.headerEditLink'); await until(`document.querySelector('#profileName')?.value==='둘째 캐릭터'`, 'second editor')
-    check(await js(`document.querySelector('[data-section] textarea').value===${JSON.stringify(initial(2).sections[0].content)} && document.querySelector('button[type=submit]').matches(':disabled')`), '수정 조회는 대상 ID·원문을 유지하고 저장 연결 전 제출 비활성화')
+    check(await js(`document.querySelector('[data-section] textarea').value===${JSON.stringify(initial(2).sections[0].content)} && !document.querySelector('button[type=submit]').matches(':disabled')`), '수정 조회는 대상 ID·원문을 유지하고 저장 활성화')
     check(await selectedColor() === initial(2).theme.main_color, '수정 화면도 캐릭터별 테마 적용')
-    check(await js(`[...document.querySelectorAll('main button')].at(-1)?.textContent.trim()==='캐릭터 삭제' && [...document.querySelectorAll('main button')].at(-1).matches(':disabled')`), '수정 화면 최하단 삭제 버튼도 후속 저장 연결 전 비활성화')
+    check(await js(`[...document.querySelectorAll('main button')].at(-1)?.textContent.trim()==='캐릭터 삭제' && ![...document.querySelectorAll('main button')].at(-1).matches(':disabled')`), '수정 화면 최하단 캐릭터 삭제 버튼 활성화')
     await set('#profileName', '둘째 편집 초안'); await selectFile('#profileFile')
     const preview = await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src`)
     check(preview.startsWith('blob:'), '로컬 이미지 미리보기 유지')
@@ -241,12 +325,12 @@ try {
     await focus('[data-section] .dragHandle'); await key('Space', ' '); await key('ArrowDown'); await key('Space', ' ')
     check(await js(`document.querySelector('[data-section] input').value==='캐릭터 1 둘째 섹션'`), '로컬 편집의 키보드 섹션 정렬 유지')
     await js(`document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`)
-    check(await js(`document.querySelector('button[type=submit]').matches(':disabled')`), '강제 submit도 저장 API 연결 전 차단')
+    await until(`document.body.innerText.includes('저장 성공')`, 'keyboard sorted save');check(sites.get(1).sections[0].id===111 && sites.get(2).profile.name==='둘째 캐릭터', '키보드 섹션 정렬을 대상 캐릭터에만 저장')
     acceptDialog = true; await nativeClick('.homeButton'); acceptDialog = false
     await until(`document.querySelectorAll('.character').length===2`, 'admin collection')
     check(await js(`[...document.querySelectorAll('button,a')].filter(e=>/^(순서 저장|캐릭터 추가|테마 저장)$/.test(e.textContent.trim())).length===3 && !document.querySelector('.headerEditLink')`), '관리자 모음에만 관리 컨트롤 표시')
     await nativeClick('a[href="/characters/new"]'); await until(`!!document.querySelector('#profileName')`, 'new blank form')
-    check(await js(`document.querySelector('#profileName').value==='' && document.querySelector('#profileMessage').value==='' && document.querySelector('#keywords').value==='' && document.querySelectorAll('[data-section]').length===0 && document.querySelector('button[type=submit]').matches(':disabled')`), '신규 폼은 빈 정보·목록으로 열리고 저장 비활성화')
+    check(await js(`document.querySelector('#profileName').value==='' && document.querySelector('#profileMessage').value==='' && document.querySelector('#keywords').value==='' && document.querySelectorAll('[data-section]').length===0 && !document.querySelector('button[type=submit]').matches(':disabled')`), '신규 폼은 빈 정보·목록으로 열리고 저장 검증 가능')
     check(await selectedColor() === mainTheme.main_color, '신규 폼 초기 테마가 저장된 메인 테마를 복사')
     await set('#profileName', '새 초안'); await button('^섹션 추가$'); await selectFile('#profileFile')
     check(await js(`document.querySelectorAll('[data-section]').length===1 && document.querySelector('img[alt="프로필 이미지 미리보기"]').src.startsWith('blob:')`), '신규 폼의 로컬 섹션·File 미리보기 유지')
@@ -255,8 +339,141 @@ try {
     acceptDialog = true; await nativeClick('.homeButton'); acceptDialog = false
     for (const route of ['/edit', '/manage.html', '/edit/', '/manage.html/']) {
         await navigate(route); await until(`document.querySelector('#profileName')?.value==='첫 캐릭터'`, `legacy ${route}`)
-        check(await js(`document.querySelector('[data-section] input').value==='캐릭터 1 첫 섹션'`), `${route} 기존 별칭은 첫 캐릭터 조회로 연결`)
+        check(await js(`document.querySelector('[data-section] input').value===${JSON.stringify(sites.get(1).sections[0].title)}`), `${route} 기존 별칭은 첫 캐릭터 조회로 연결`)
     }
+    await reset(true, '/characters/2/edit')
+    const firstBeforeSave = structuredClone(sites.get(1)), saveStart = writeCalls('save_character').length
+    await set('#profileName', '둘째 저장 이름'); await set('#profileMessage', '수정한 상태'); await set('#keywords', '새 키워드,둘째')
+    await set('[data-section] textarea', '  *저장 원문*\n_그대로_  '); await selectFile('#profileFile'); await selectFile('#feedFiles')
+    await focus('#feedItems .sortableItem:last-child .dragHandle'); await key('Space', ' '); await key('ArrowUp'); await key('ArrowUp'); await key('Space', ' ')
+    mode.saveDelay = 700
+    await submit(); await submit()
+    await untilRequests(() => writeCalls('save_character').length > saveStart, 'scoped save request')
+    check(await js(`document.querySelector('fieldset').disabled && document.querySelector('.headerLogoutButton').disabled`), '저장 중 필드·헤더 로그아웃 잠금')
+    await until(`document.body.innerText.includes('저장 성공')`, 'scoped save success'); await saveReady(); mode.saveDelay = 0
+    check(writeCalls('save_character').length === saveStart + 1 && sites.get(2).profile.name === '둘째 저장 이름', '동기 중복 제출은 대상 캐릭터 RPC 한 번으로 저장')
+    check(JSON.stringify(sites.get(1)) === JSON.stringify(firstBeforeSave), '다른 캐릭터 데이터는 수정·이미지 저장의 영향을 받지 않음')
+    check(sites.get(2).profile.profile_image_path.startsWith('profile/2/') && sites.get(2).feed[0].image_path.startsWith('feed/2/') && sites.get(2).feed[1].id === 220 && sites.get(2).feed[2].id === 221, '프로필·피드 새 이미지가 대상 namespace에 저장되고 바뀐 피드 순서·기존 ID 보존')
+    check(requests.filter(r => r.uploadBytes).every(r => r.uploadBytes.includes(image)), '이미지는 재인코딩하지 않고 선택한 원본 바이트로 업로드')
+    check(sites.get(2).sections[0].content === '  *저장 원문*\n_그대로_  ' && sites.get(2).sections[0].id === 210, '기존 섹션 ID와 서식 원문 공백을 보존')
+    check(!objects.has('profile/2/image.png') && objects.has('profile/1/image.png'), '확정 저장 후 미사용 이전 이미지만 정리')
+
+    await reset(true, '/characters/2/edit')
+    const invalidStart = writeCalls('save_character').length
+    await set('#profileName', ''); await submit(); await pause(80)
+    check(writeCalls('save_character').length === invalidStart && await js(`document.querySelector('#profileName').validationMessage.length>0`), '빈 이름은 저장 API 호출 전에 공통 검증 차단')
+    await set('#profileName', '유효 이름'); await set('#profileMessage', ' '); await submit(); await pause(80)
+    check(writeCalls('save_character').length === invalidStart && await js(`document.querySelector('#profileMessage').validationMessage.length>0`), '빈 상태 메시지도 저장 API 호출 전 차단')
+    await set('#profileMessage', '유효 상태'); await set('#keywords', ', ,'); await submit(); await pause(80)
+    check(writeCalls('save_character').length === invalidStart && await js(`document.querySelector('#keywords').validationMessage.length>0`), '빈 키워드는 저장 API 호출 전 차단')
+    await set('#keywords', '유효'); await set('[data-section] textarea', ' '); await submit(); await pause(80)
+    check(writeCalls('save_character').length === invalidStart && await js(`document.querySelector('[data-section] textarea').validationMessage.length>0`), '빈 섹션 내용은 저장 API 호출 전 차단')
+    await set('[data-section] textarea', '유효 내용'); await set('[data-theme]', '#badhex'); await submit(); await pause(80)
+    check(writeCalls('save_character').length === invalidStart && await js(`document.querySelector('[data-theme]').validationMessage.length>0`), '잘못된 테마색은 저장 API 호출 전 차단')
+
+    await reset(true, '/characters/2/edit'); await set('#profileName', '충돌 보존'); await selectFile('#profileFile')
+    const conflictPreview = await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src`)
+    mode.saveFailure = 'character_conflict'; await submit()
+    await until(`document.body.innerText.includes('다른 창') && !document.querySelector('fieldset').disabled`, 'CAS conflict')
+    check(await js(`document.querySelector('#profileName').value==='충돌 보존' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(conflictPreview)}`), 'CAS 충돌에도 텍스트·선택 File 초안 유지')
+    mode.saveFailure = null; await submit(); await until(`document.body.innerText.includes('저장 성공')`, 'conflict corrected retry')
+
+    await reset(true, '/characters/2/edit'); await set('#profileName', '응답 유실 저장'); await selectFile('#profileFile')
+    const lostStart = requests.length; mode.saveDropResponse = true; await submit()
+    await until(`!!document.querySelector('[role=alert]') && !document.querySelector('fieldset').disabled`, 'lost save response')
+    check(sites.get(2).profile.name === '응답 유실 저장' && !requests.slice(lostStart).some(r => r.method==='DELETE'), '저장 응답 유실 시 커밋 가능 이미지를 삭제하지 않음')
+    const lostUploads = requests.slice(lostStart).filter(r => r.uploadPath).length
+    await submit(); await until(`document.body.innerText.includes('저장 성공')`, 'lost save retry')
+    check(requests.slice(lostStart).filter(r => r.uploadPath).length === lostUploads && sites.size === 2, '응답 유실 재시도는 같은 불변 업로드 경로를 재사용')
+
+    await reset(true, '/characters/2/edit'); await set('#profileName', '업로드 재시도'); await selectFile('#profileFile')
+    const uploadStart = writeCalls('save_character').length; mode.uploadFailure = true; mode.refStatus = 503; const uploadRequestStart = requests.length
+    await submit(); await until(`!!document.querySelector('[role=alert]') && !document.querySelector('fieldset').disabled`, 'upload failure')
+    check(writeCalls('save_character').length === uploadStart && await js(`document.querySelector('#profileName').value==='업로드 재시도'`), '이미지 업로드 실패 시 DB 저장 차단과 입력 유지')
+    check(!requests.slice(uploadRequestStart).some(r=>r.method==='DELETE'), '전체 이미지 참조 조회 실패 시 정리 삭제를 중단')
+    mode.refStatus = 200; await submit(); await until(`document.body.innerText.includes('저장 성공')`, 'upload retry success')
+    check(sites.get(2).profile.name === '업로드 재시도', '업로드 실패 후 같은 File과 초안으로 재시도 가능')
+
+    await reset(true, '/characters/2/edit')
+    sites.get(1).profile.profile_image_path = sites.get(2).profile.profile_image_path
+    await selectFile('#profileFile'); await nativeClick('#feedItems .picEditItem > button:last-child')
+    mode.cleanupFailure = true; await submit()
+    await until(`document.body.innerText.includes('이미지 정리') && !document.querySelector('fieldset').disabled`, 'cleanup warning after save')
+    const savedCount = writeCalls('save_character').length
+    check(objects.has('profile/2/image.png'), '다른 캐릭터가 참조하는 옛 프로필 이미지는 정리하지 않음')
+    mode.cleanupFailure = false; await button('이미지 정리 다시 시도')
+    await until(`!document.body.innerText.includes('이미지 정리 다시 시도') && !document.body.innerText.includes('이미지 정리 중') && !document.querySelector('fieldset').disabled`, 'cleanup retry success')
+    check(writeCalls('save_character').length === savedCount && !objects.has('feed/2/first.png') && objects.has('profile/2/image.png'), '정리 재시도는 본문 재저장 없이 미참조 파일만 삭제')
+
+    await reset(true, '/characters/2/edit'); await set('#profileName', '업로드 중 인증 종료'); await selectFile('#profileFile')
+    const authUploadStart = requests.length, authSaveStart = writeCalls('save_character').length
+    mode.uploadDelay = 900; await submit()
+    await untilRequests(() => requests.slice(authUploadStart).some(r => r.uploadPath), 'delayed upload')
+    await externalSignout(); await until(`document.body.innerText.includes('다시 로그인')`, 'upload session invalidation'); await pause(1100)
+    check(writeCalls('save_character').length === authSaveStart && await js(`document.querySelector('#profileName').value==='업로드 중 인증 종료'`), '업로드 대기 중 인증 종료 후에는 저장 RPC를 진행하지 않고 초안 보존')
+    await button('다시 로그인'); await until(`!!document.querySelector('#loginModal')`, 'upload reauth modal')
+    await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]')
+    await until(`!document.querySelector('#loginModal') && !document.querySelector('fieldset').disabled`, 'upload reauth success')
+    mode.uploadDelay = 0; await submit(); await until(`document.body.innerText.includes('저장 성공')`, 'auth recovered save')
+
+    await reset(true, '/characters/new'); await until(`!!document.querySelector('#profileName')`, 'new create ready')
+    const reservationStart = writeCalls('reserve_character_id').length
+    await submit(); await pause(80)
+    check(writeCalls('reserve_character_id').length === reservationStart && sites.size === 2, '신규 화면 진입·공란 제출만으로 예약이나 빈 캐릭터 생성 없음')
+    await set('#profileName', '새 캐릭터 저장'); await set('#profileMessage', '새 상태'); await set('#keywords', '신규,테스트')
+    await selectFile('#profileFile'); await selectFile('#feedFiles'); await button('^섹션 추가$'); await set('[data-section] input', '새 섹션'); await set('[data-section] textarea', ' *새 원문* ')
+    mode.uploadFailure = true; mode.cleanupFailure = true; await submit()
+    await until(`!!document.querySelector('[role=alert]') && !document.querySelector('fieldset').disabled`, 'new upload failure')
+    check(sites.size === 2 && writeCalls('create_character').length === 0, '신규 업로드 실패에는 빈 캐릭터가 생성되지 않음')
+    mode.createDelay = 700; const createStart = writeCalls('create_character').length
+    await submit(); await submit(); await untilRequests(() => writeCalls('create_character').length > createStart, 'new create request')
+    check(await js(`document.querySelector('fieldset').disabled && document.querySelector('.headerLogoutButton').disabled`), '신규 생성 중 중복 저장·로그아웃 잠금')
+    await until(`location.pathname==='/characters/3' && document.querySelector('.profileName')?.textContent==='새 캐릭터 저장'`, 'new create navigate')
+    check(sites.size === 3 && writeCalls('create_character').length === createStart + 1 && order.at(-1) === 3, '첫 저장이 관련 행과 마지막 순서를 만들고 실제 프로필 주소로 이동')
+    check(sites.get(3).profile.profile_image_path.startsWith('profile/3/') && sites.get(3).feed[0].image_path.startsWith('feed/3/'), '신규 예약 ID 아래 이미지 업로드 후 생성')
+    check(await js(`document.body.innerText.includes('이미지 정리 다시 시도')`), '생성 성공 후 프로필로 이동해도 남은 이미지 정리 재시도 표시')
+    const createdWrites = writeCalls('create_character').length
+    mode.cleanupFailure = false; mode.cleanupDelay = 700; await button('이미지 정리 다시 시도')
+    await until(`document.body.innerText.includes('이미지 정리 중')`, 'new public cleanup busy')
+    check(await js(`document.querySelector('.headerLogoutButton').disabled`), '이동한 프로필의 정리 작업도 로그아웃 차단')
+    await until(`!document.body.innerText.includes('이미지 정리')`, 'new public cleanup success')
+    check(writeCalls('create_character').length === createdWrites && sites.size === 3, '프로필에서 정리 재시도는 캐릭터 생성·저장을 반복하지 않음')
+
+    await reset(true, '/characters/new'); await until(`!!document.querySelector('#profileName')`, 'lost create form')
+    await set('#profileName', '생성 전 원문'); await set('#profileMessage', '첫 상태'); await set('#keywords', '신규'); await selectFile('#profileFile')
+    mode.createDropResponse = true; const lostCreateStart = requests.length; await submit()
+    await until(`!!document.querySelector('[role=alert]') && !document.querySelector('fieldset').disabled`, 'lost create response')
+    check(sites.size === 3 && await js(`location.pathname==='/characters/new' && document.querySelector('#profileName').value==='생성 전 원문'`), '생성 응답 유실에도 새 폼과 초안을 보존')
+    await set('#profileName', '유실 후 바뀐 이름'); await set('#profileMessage', '바뀐 상태'); await submit()
+    await until(`location.pathname==='/characters/3' && document.querySelector('.profileName')?.textContent==='유실 후 바뀐 이름'`, 'lost create edited retry')
+    const creationAttempts = requests.slice(lostCreateStart).filter(r => r.method === 'POST' && r.path.endsWith('/create_character'))
+    check(sites.size === 3 && new Set(creationAttempts.map(r=>r.body.p_request_id)).size === 1 && creationAttempts.every(r=>r.body.p_character_id===3), '생성 재시도는 같은 UUID·예약 ID를 사용해 중복 캐릭터를 만들지 않음')
+    check(writeCalls('save_character').some(r=>r.body.p_character_id===3 && r.body.p_data.profile.name==='유실 후 바뀐 이름'), '최초 생성 결과 확인 후 바뀐 초안은 해당 캐릭터 수정으로 저장')
+
+    await reset(true, '/characters/2/edit'); const deleteStart = writeCalls('delete_character').length
+    await button('^캐릭터 삭제$'); await pause(80)
+    check(sites.has(2) && writeCalls('delete_character').length === deleteStart, '삭제 확인 취소 시 DB·이미지 변경 없음')
+    acceptDialog = true; mode.deleteDropResponse = true; mode.deleteDelay = 700; await button('^캐릭터 삭제$'); acceptDialog = false
+    await untilRequests(() => writeCalls('delete_character').length > deleteStart, 'pending delete');check(await js(`document.querySelector('fieldset').disabled && document.querySelector('.headerLogoutButton').disabled`), '삭제 중 필드·다른 저장·로그아웃 잠금')
+    await until(`!!document.querySelector('[role=alert]') && !document.querySelector('fieldset').disabled`, 'lost delete response')
+    check(!sites.has(2) && await js(`location.pathname==='/characters/2/edit' && document.querySelector('#profileName').value==='둘째 캐릭터'`), '삭제 응답 유실 시 기존 화면을 유지하고 재시도 가능')
+    mode.cleanupFailure = true; acceptDialog = true; await button('^캐릭터 삭제$'); acceptDialog = false
+    await until(`location.pathname==='/' && document.querySelectorAll('.character').length===1`, 'delete retry navigate')
+    check(sites.has(1) && !sites.has(2), '삭제 결과 재시도는 다른 캐릭터를 보존하고 메인으로 이동')
+    check(await js(`document.body.innerText.includes('이미지 정리 다시 시도')`), '삭제 완료 후 메인으로 이동해도 미완료 이미지 정리 재시도 표시')
+    await navigate('/'); await until(`document.querySelectorAll('.character').length===1 && document.body.innerText.includes('이미지 정리 다시 시도')`, 'cleanup journal restored')
+    const deletedWrites = writeCalls('delete_character').length
+    mode.cleanupFailure = false; mode.cleanupDelay = 700; await button('이미지 정리 다시 시도')
+    await until(`document.body.innerText.includes('이미지 정리 중')`, 'deleted public cleanup busy')
+    check(await js(`document.querySelector('.headerLogoutButton').disabled`), '복원된 정리 기록 처리 중에도 로그아웃 차단')
+    await until(`!document.body.innerText.includes('이미지 정리')`, 'deleted public cleanup done')
+    check(writeCalls('delete_character').length === deletedWrites && !objects.has('profile/2/image.png') && objects.has('profile/1/image.png'), '새로고침 후 정리 기록을 복원하고 재삭제 RPC 없이 삭제 대상 이미지만 정리')
+    mode.cleanupDelay = 0
+    await spa('/characters/1/edit'); await until(`!!document.querySelector('#profileName')`, 'last character editor')
+    acceptDialog = true; await button('^캐릭터 삭제$'); acceptDialog = false
+    await until(`location.pathname==='/' && document.body.innerText.includes('등록된 캐릭터가 없습니다')`, 'last character deletion')
+    check(sites.size === 0 && await js(`document.querySelectorAll('.character').length===0`), '마지막 캐릭터 삭제 후 빈 메인 목록 표시')
+
     await reset(true, '/characters/999/edit'); await until(`document.body.innerText.includes('찾을 수')`, 'missing editor')
     check(!await hasEditor(), '없는 캐릭터 수정 경로가 다른 캐릭터 편집기로 대체되지 않음')
 
@@ -282,7 +499,7 @@ try {
     const legacy = requests.filter(r => /\/rpc\/(load_site|save_site)$/.test(r.path))
     const writes = requests.filter(r => r.path.startsWith('/storage/') && r.method !== 'GET' && r.method !== 'OPTIONS'
         || r.path.startsWith('/rest/v1/') && r.method !== 'OPTIONS' && !/\/rpc\/load_(main|character)$/.test(r.path))
-    check(legacy.length === 0 && writes.length === 0, '전체 동선에서 구 RPC·직접 테이블 조회·DB/Storage 쓰기 없음')
+    check(legacy.length === 0 && !writes.some(r => r.path.startsWith('/rest/v1/') && !r.path.startsWith('/rest/v1/rpc/')), '모든 쓰기는 새 캐릭터 RPC·격리 Storage mock을 사용하고 구 RPC·직접 테이블 요청 없음')
     check(errors.length===0,'브라우저 실행 예외 없음')
     console.log(JSON.stringify({phase,passed:passed.length,checks:passed,errors},null,2))
 } catch(error) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import CharacterFields from '../components/CharacterFields'
 import type { LeaveGuard } from '../hooks/useGuardedNavigation'
 import { useMainQuery } from '../hooks/useSiteQuery'
@@ -9,10 +9,25 @@ import { toDraft } from '../utils/siteDraft'
 import { applyTheme, themeFields, toThemeData } from '../utils/theme'
 import { MAX_FEED_IMAGES } from '../utils/uploadLimits'
 import { isHexColor } from '../utils/validation'
+import { createCharacter, createCharacterContext } from '../services/save'
+import { useEditorWork } from '../hooks/useEditorWork'
+import { reportDraftValidation } from '../utils/formValidation'
+import type { SortLock } from '../utils/sortLock'
+import EditorAuthNotice from '../components/EditorAuthNotice'
+import type { AuthNotice } from '../components/EditorAuthNotice'
+import ImageCleanupNotice from '../components/ImageCleanupNotice'
 
 interface NewCharacterPageProps {
     onLeaveGuardChange: (guard: LeaveGuard) => void
     authBlocked: boolean
+    authNotice: AuthNotice | null
+    workLock: SortLock
+    canWrite: () => boolean
+    onRetryAuth: () => void
+    onReauthenticate: () => void
+    onExit: () => void
+    onBusyChange: (busy: boolean) => void
+    onCreated: (site: SiteData, warning: string | null) => void
 }
 
 interface NewEditor {
@@ -28,14 +43,15 @@ function emptyCharacter(theme: SiteTheme): SiteData {
     }
 }
 
-export default function NewCharacterPage({ onLeaveGuardChange, authBlocked }: NewCharacterPageProps) {
+export default function NewCharacterPage({ onLeaveGuardChange, authBlocked, authNotice, workLock, canWrite, onRetryAuth, onReauthenticate, onExit, onBusyChange, onCreated }: NewCharacterPageProps) {
     const [editor, setEditor] = useState<NewEditor | null>(null)
     const currentEditor = useRef<NewEditor | null>(null)
-    const blocked = useRef(authBlocked)
-    useLayoutEffect(() => { blocked.current = authBlocked }, [authBlocked])
+    const [creation] = useState(createCharacterContext)
+    const form = useRef<HTMLFormElement>(null)
     const [focusedSection, setFocusedSection] = useState<string | null>(null)
     const { lock, activeListId } = useSortLock()
     const sorting = activeListId !== null
+    const work = useEditorWork({ workLock, sortLock: lock, blocked: authBlocked, canWrite })
 
     const initialize = useCallback((main: MainData) => {
         const baseline = emptyCharacter(main.theme)
@@ -47,9 +63,14 @@ export default function NewCharacterPage({ onLeaveGuardChange, authBlocked }: Ne
 
     useEffect(() => {
         onLeaveGuardChange(() => isEditorDirty(currentEditor.current?.baseline ?? null, currentEditor.current?.draft ?? null)
-            || lock.getOwner() !== null)
+            || lock.getOwner() !== null || workLock.getOwner() !== null)
         return () => onLeaveGuardChange(null)
-    }, [lock, onLeaveGuardChange])
+    }, [lock, onLeaveGuardChange, workLock])
+
+    useEffect(() => {
+        onBusyChange(query.status === 'loading' || sorting || work.busy)
+        return () => onBusyChange(false)
+    }, [onBusyChange, query.status, sorting, work.busy])
 
     useEffect(() => {
         const previousTitle = document.title
@@ -65,24 +86,35 @@ export default function NewCharacterPage({ onLeaveGuardChange, authBlocked }: Ne
     }, [theme])
 
     function change(next: SiteEditDraft) {
-        if (blocked.current || !currentEditor.current) return
+        if (!work.canContinue() || workLock.getOwner() !== null || !currentEditor.current) return
         const value = { ...currentEditor.current, draft: next }
         currentEditor.current = value
         setEditor(value)
     }
 
     function addSection() {
-        if (blocked.current || lock.getOwner() !== null || !currentEditor.current) return
+        if (!work.canStart() || !currentEditor.current) return
         const id = crypto.randomUUID()
         const draft = currentEditor.current.draft
         change({ ...draft, sections: [...draft.sections, { id, title: '', content: '' }] })
         setFocusedSection(id)
     }
 
+    async function save() {
+        const editor = currentEditor.current
+        if (!editor) return
+        await work.run('saving', async guard => {
+            const result = await createCharacter(editor.draft, creation, guard)
+            if (!work.isMounted()) return
+            currentEditor.current = { baseline: result.site, draft: toDraft(result.site) }
+            onCreated(result.site, result.cleanupWarning)
+        })
+    }
+
     return (
-        <main className="flexColumn gapLg" aria-busy={query.status === 'loading'}>
+        <main className="flexColumn gapLg" aria-busy={query.status === 'loading' || work.busy}>
             <h1 className="text2 mainColorText bold">캐릭터 추가</h1>
-            <p className="card pdLg text3" id="newCharacterNotice">신규 캐릭터 저장은 준비 중입니다.</p>
+            <EditorAuthNotice notice={authNotice} disabled={work.busy || sorting} onRetry={onRetryAuth} onLogin={onReauthenticate} onExit={onExit} />
             {query.status === 'loading' && <p className="card pdLg text3" role="status">기본 테마를 불러오는 중…</p>}
             {query.status === 'error' && (
                 <div className="card pdLg flexColumn gapSm">
@@ -90,16 +122,20 @@ export default function NewCharacterPage({ onLeaveGuardChange, authBlocked }: Ne
                     <button className="btn h30 border borderRad" type="button" onClick={reload}>다시 시도</button>
                 </div>
             )}
-            {authBlocked && <p className="card pdLg text3" role="status">로그인 상태를 확인해 주세요. 입력한 내용은 유지됩니다.</p>}
             {draft && (
-                <form className="flexColumn gapLg" onSubmit={event => event.preventDefault()} aria-describedby="newCharacterNotice">
-                    <fieldset className="editorFields flexColumn gapLg" disabled={authBlocked}>
+                <form ref={form} className="flexColumn gapLg" noValidate onSubmit={event => {
+                    event.preventDefault()
+                    if (form.current && !authBlocked && !work.busy && !sorting && reportDraftValidation(form.current, draft, 0, work.reportError)) void save()
+                }}>
+                    <fieldset className="editorFields flexColumn gapLg" disabled={authBlocked || work.busy}>
                         <CharacterFields draft={draft} change={change} addSection={addSection}
                             focusedSection={focusedSection} sorting={sorting} sortLock={lock}
-                            editingDisabled={authBlocked} maxFeedCount={MAX_FEED_IMAGES} saveDisabled />
+                            editingDisabled={authBlocked || work.busy} maxFeedCount={MAX_FEED_IMAGES} saving={work.action === 'saving'} />
                     </fieldset>
                 </form>
             )}
+            {work.error && <p className="card pdLg text3" role="alert">{work.error}</p>}
+            <ImageCleanupNotice workLock={workLock} sortLock={lock} canWrite={canWrite} blocked={authBlocked} />
         </main>
     )
 }

@@ -35,6 +35,22 @@ describe('cleanup path validation', () => {
 })
 
 describe('confirmed cleanup journal persistence', () => {
+    it('keeps optional character ownership for new records and accepts old records without guessing ownership', () => {
+        const storage = memoryStorage()
+        storage.values.set(recordKey('feed/legacy.png'), JSON.stringify({ path: 'feed/legacy.png', queuedAt: 1 }))
+        const journal = createCleanupJournal(scope, () => storage)
+        journal.add('feed/2/new.png', 2)
+        expect(journal.paths()).toEqual(['feed/2/new.png', 'feed/legacy.png'])
+        expect(JSON.parse(storage.values.get(recordKey('feed/2/new.png'))!)).toMatchObject({ characterId: 2 })
+        expect(JSON.parse(storage.values.get(recordKey('feed/legacy.png'))!)).not.toHaveProperty('characterId')
+        expect(createCleanupJournal(scope, () => storage).paths().sort()).toEqual(['feed/2/new.png', 'feed/legacy.png'])
+    })
+
+    it('ignores malformed ownership metadata without treating it as a confirmed path', () => {
+        const storage = memoryStorage()
+        storage.values.set(recordKey('feed/invalid.png'), JSON.stringify({ path: 'feed/invalid.png', queuedAt: 1, characterId: -1 }))
+        expect(createCleanupJournal(scope, () => storage).paths()).toEqual([])
+    })
     it('stores one record per immutable path and keeps its original queued timestamp', () => {
         const storage = memoryStorage()
         const journal = createCleanupJournal(scope, () => storage)

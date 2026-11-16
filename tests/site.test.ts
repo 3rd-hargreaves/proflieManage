@@ -3,7 +3,7 @@ import type { MainData, SiteData } from '../src/types/site'
 
 const api = vi.hoisted(() => ({ rpc: vi.fn(), abortSignal: vi.fn() }))
 vi.mock('../src/lib/supabase', () => ({ supabase: { rpc: api.rpc } }))
-import { loadCharacter, loadMain, loadSite } from '../src/services/site'
+import { loadCharacter, loadMain } from '../src/services/site'
 
 function fixture(): SiteData {
     return {
@@ -20,13 +20,13 @@ beforeEach(() => {
     api.abortSignal.mockReset().mockResolvedValue({ data: fixture(), error: null })
 })
 
-it('loads a complete site through exactly one RPC with the caller cancellation signal', async () => {
+it('loads a complete character through exactly one RPC with the caller cancellation signal', async () => {
     const signal = new AbortController().signal
     const site = fixture()
     api.abortSignal.mockResolvedValue({ data: site, error: null })
 
-    expect(await loadSite(signal)).toBe(site)
-    expect(api.rpc).toHaveBeenCalledExactlyOnceWith('load_site')
+    expect(await loadCharacter(1, signal)).toBe(site)
+    expect(api.rpc).toHaveBeenCalledExactlyOnceWith('load_character', { p_character_id: 1 })
     expect(api.abortSignal).toHaveBeenCalledExactlyOnceWith(signal)
 })
 
@@ -37,46 +37,45 @@ it('preserves server order, IDs, raw section markup, and all rows beyond the for
     }))
     api.abortSignal.mockResolvedValue({ data: site, error: null })
 
-    const result = await loadSite(new AbortController().signal)
+    const result = await loadCharacter(1, new AbortController().signal)
 
     expect(result).toEqual(site)
-    expect(result.sections).toHaveLength(1503)
+    expect(result?.sections).toHaveLength(1503)
     expect(api.rpc).toHaveBeenCalledTimes(1)
 })
 
 it('accepts empty lists and an absent profile image', async () => {
     const site = { ...fixture(), sections: [], keywords: [], feed: [] }
     api.abortSignal.mockResolvedValue({ data: site, error: null })
-    expect(await loadSite(new AbortController().signal)).toEqual(site)
+    expect(await loadCharacter(1, new AbortController().signal)).toEqual(site)
 })
 
 it.each([
-    null,
     { ...fixture(), profile: null },
     { ...fixture(), theme: null },
     { ...fixture(), sections: [{ id: 1, title: '순서 없음', content: '내용' }] },
     { ...fixture(), feed: [{ id: 1, sort_order: 1, image_path: null }] },
 ])('rejects an incomplete RPC snapshot instead of exposing partial content: %j', async data => {
     api.abortSignal.mockResolvedValue({ data, error: null })
-    await expect(loadSite(new AbortController().signal)).rejects.toThrow('사이트 정보를 불러오지 못했습니다')
+    await expect(loadCharacter(1, new AbortController().signal)).rejects.toThrow('사이트 정보를 불러오지 못했습니다')
     expect(api.rpc).toHaveBeenCalledTimes(1)
 })
 
 it('reports a database error without returning its partial data', async () => {
     const error = { code: 'PGRST202', message: 'Function unavailable' }
     api.abortSignal.mockResolvedValue({ data: fixture(), error })
-    await expect(loadSite(new AbortController().signal)).rejects.toMatchObject({ cause: error })
+    await expect(loadCharacter(1, new AbortController().signal)).rejects.toMatchObject({ cause: error })
 })
 
 it('reports a rejected network request as a load failure', async () => {
     api.abortSignal.mockRejectedValue(new TypeError('Network unavailable'))
-    await expect(loadSite(new AbortController().signal)).rejects.toThrow('사이트 정보를 불러오지 못했습니다')
+    await expect(loadCharacter(1, new AbortController().signal)).rejects.toThrow('사이트 정보를 불러오지 못했습니다')
 })
 
 it('does not send a request after cancellation', async () => {
     const controller = new AbortController()
     controller.abort()
-    await expect(loadSite(controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(loadCharacter(1, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
     expect(api.rpc).not.toHaveBeenCalled()
 })
 
@@ -84,7 +83,7 @@ it('discards a successful response that arrives after cancellation', async () =>
     const controller = new AbortController()
     let respond!: (value: unknown) => void
     api.abortSignal.mockReturnValue(new Promise(resolve => { respond = resolve }))
-    const request = loadSite(controller.signal)
+    const request = loadCharacter(1, controller.signal)
     controller.abort()
     respond({ data: fixture(), error: null })
     await expect(request).rejects.toMatchObject({ name: 'AbortError' })
@@ -96,7 +95,7 @@ it('preserves cancellation when the SDK resolves with an abort error', async () 
         controller.abort()
         return Promise.resolve({ data: null, error: { message: 'Aborted' } })
     })
-    await expect(loadSite(controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(loadCharacter(1, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
 })
 
 function characterFixture(id = 2): SiteData {
