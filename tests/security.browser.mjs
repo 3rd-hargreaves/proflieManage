@@ -207,6 +207,16 @@ try {
         if (url.origin === apiOrigin) {
             if (request.method === 'OPTIONS') { await fulfill(204, 'text/plain'); return }
             if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/load_main') { await fulfill(200, 'application/json', JSON.stringify(mainData)); return }
+            if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/save_character_order') {
+                const body = JSON.parse(request.postData || '{}')
+                mainData.characters = body.p_order.map((id, index) => ({ ...mainData.characters.find(character => character.id === id), sort_order: index + 1 }))
+                await fulfill(200, 'application/json', JSON.stringify(body.p_order)); return
+            }
+            if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/save_main_theme') {
+                const body = JSON.parse(request.postData || '{}')
+                mainData.theme = { id: 1, ...body.p_data }
+                await fulfill(200, 'application/json', JSON.stringify(mainData.theme)); return
+            }
             if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/load_character') { const id = Number(JSON.parse(request.postData || '{}').p_character_id); await fulfill(200, 'application/json', JSON.stringify(id === 1 ? site : id === 2 ? currentSecondSite : null)); return }
             if (request.method === 'POST' && url.pathname === '/rest/v1/rpc/load_image_references') {
                 const refs = [site, currentSecondSite].flatMap(entry => [entry.profile.profile_image_path, ...entry.feed.map(row => row.image_path)]).filter(Boolean)
@@ -362,6 +372,37 @@ try {
         && mockedExternal.slice(beforeProductionSave).some(request => request.method === 'POST' && request.path.startsWith('/storage/v1/object/site-images/profile/2/')),
         'production CSP 아래 대상 namespace 이미지 업로드·캐릭터 저장 RPC 정상')
     check(await js('window.__policyViolations.length === 0'), '캐릭터 저장과 이미지 정리도 허용된 연결만 사용')
+    await navigate('/')
+    await until(`document.querySelectorAll('main .dragHandle').length===2 && !!document.querySelector('[data-theme]')`, 'production main management')
+    const beforeMainOrder = mockedExternal.length
+    await js(`document.querySelector('main .dragHandle').focus()`)
+    for (const [code, key, windowsVirtualKeyCode] of [['Space', ' ', 32], ['ArrowDown', 'ArrowDown', 40], ['Space', ' ', 32]]) {
+        await cdp('Input.dispatchKeyEvent', { type: 'keyDown', code, key, windowsVirtualKeyCode })
+        await cdp('Input.dispatchKeyEvent', { type: 'keyUp', code, key, windowsVirtualKeyCode })
+        await pause(180)
+    }
+    check(await js(`document.querySelector('.character').getAttribute('href')==='/characters/1'`)
+        && !mockedExternal.slice(beforeMainOrder).some(request => request.path === '/rest/v1/rpc/save_character_order'), 'production CSP 아래 메인 키보드 정렬은 저장 전까지 로컬 상태만 변경')
+    await js(`[...document.querySelectorAll('main button')].find(button=>button.textContent.trim()==='순서 저장').click()`)
+    await until(`document.querySelector('main')?.getAttribute('aria-busy')!=='true' && !!document.querySelector('.headerLogoutButton:not(:disabled)')`, 'production main order saved')
+    check(mockedExternal.slice(beforeMainOrder).some(request => request.path === '/rest/v1/rpc/save_character_order') && mainData.characters[0].id === 1, 'production 메인 순서 저장은 전용 RPC로만 반영')
+    const beforeMainTheme = mockedExternal.length
+    await setInput('[data-theme="--main-color"]', '#315a73')
+    await js(`[...document.querySelectorAll('main button')].find(button=>button.textContent.trim()==='테마 저장').click()`)
+    await until(`document.querySelector('main')?.getAttribute('aria-busy')!=='true' && !!document.querySelector('.headerLogoutButton:not(:disabled)')`, 'production main theme saved')
+    check(mockedExternal.slice(beforeMainTheme).some(request => request.path === '/rest/v1/rpc/save_main_theme') && mainData.theme.main_color === '#315a73'
+        && await js(`getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()==='#315a73'`), 'production 메인 테마 저장과 CSS 변경은 전용 RPC·허용된 스타일 경로 사용')
+    await navigate('/')
+    await until(`document.querySelector('.character')?.getAttribute('href')==='/characters/1' && getComputedStyle(document.documentElement).getPropertyValue('--main-color').trim()==='#315a73'`, 'production main saves persisted')
+    check(await js(`window.__policyViolations.length===0 && !document.querySelector('.character button')`), '메인 관리 재조회도 CSP 위반·중첩 버튼 없이 저장 상태 표시')
+    if (process.env.PROFILE_SCREENSHOT_DIR) {
+        for (const width of [1280, 768, 390]) {
+            await cdp('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width <= 768 })
+            await pause(150)
+            const { data } = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
+            await fs.writeFile(path.join(path.resolve(process.env.PROFILE_SCREENSHOT_DIR), `main-admin-${width}.png`), Buffer.from(data, 'base64'))
+        }
+    }
     await Promise.all(handlers)
     check(unexpectedExternal.length === 0 && !mockedExternal.some(request => /\/rpc\/(load_site|save_site)$/.test(request.path) || request.path.startsWith('/rest/v1/') && !request.path.startsWith('/rest/v1/rpc/')), '실제 외부 DB·Storage 접속 없이 새 RPC·이미지 쓰기를 모두 mock 처리')
     check(errors.length === 0, 'production 브라우저 실행 예외 없음')

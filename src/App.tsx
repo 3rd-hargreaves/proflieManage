@@ -28,8 +28,11 @@ export default function App() {
     const [auth, setAuth] = useState<AuthState>({ user: null, status: authConfigurationError ? 'signedOut' : 'checking', error: null })
     const [reauthOpen, setReauthOpen] = useState(false)
     const [workLock] = useState(createSortLock)
+    const [mainSortLock] = useState(createSortLock)
+    const [mainVersion, setMainVersion] = useState(0)
     const workOwner = useSyncExternalStore(workLock.subscribe, workLock.getOwner, workLock.getOwner)
-    const editorGuard = useRef<LeaveGuard>(null)
+    const mainSortOwner = useSyncExternalStore(mainSortLock.subscribe, mainSortLock.getOwner, mainSortLock.getOwner)
+    const pageGuard = useRef<LeaveGuard>(null)
     const [cleanupNotice, setCleanupNotice] = useState<string | null>(null)
     const onPathChange = useCallback((nextPath: string) => {
         if (!isEditorPath(nextPath)) {
@@ -38,9 +41,9 @@ export default function App() {
         }
     }, [])
     const { path, navigate, confirmLeave, setLeaveGuard: setNavigationGuard, getCurrentPath, getLocationKey } = useGuardedNavigation(onPathChange)
-    const setLeaveGuard = useCallback((guard: LeaveGuard) => { editorGuard.current = guard }, [])
+    const setLeaveGuard = useCallback((guard: LeaveGuard) => { pageGuard.current = guard }, [])
     useEffect(() => {
-        setNavigationGuard(() => workLock.getOwner() !== null || !!editorGuard.current?.())
+        setNavigationGuard(() => workLock.getOwner() !== null || !!pageGuard.current?.())
         return () => setNavigationGuard(null)
     }, [workLock, setNavigationGuard])
     const [signingOut, setSigningOut] = useState(false)
@@ -131,7 +134,7 @@ export default function App() {
     }
 
     async function logout() {
-        if (logoutPending.current || workLock.getOwner() !== null || !confirmLeave()) return
+        if (logoutPending.current || workLock.getOwner() !== null || mainSortLock.getOwner() !== null || !confirmLeave()) return
         logoutPending.current = true
         writeAllowed.current = false
         setSigningOut(true)
@@ -140,6 +143,7 @@ export default function App() {
             await signOut()
             invalidateVerification()
             setAuth({ user: null, status: 'signedOut', error: null })
+            setMainVersion(version => version + 1)
             navigate('/', true, true)
         } catch (error) {
             setLogoutError(errorMessage(error))
@@ -161,7 +165,11 @@ export default function App() {
     }
     function content() {
         if (notFound) return <main><p className="card pdLg text3">캐릭터를 찾을 수 없습니다.</p></main>
-        if (route.page === 'main') return <MainPage isAdmin={isAdmin} navigate={navigate} />
+        if (route.page === 'main') return (
+            <MainPage key={`main-${mainVersion}`} isAdmin={isAdmin} signingOut={signingOut} navigate={navigate}
+                workLock={workLock} sortLock={mainSortLock} canWrite={canWrite} onLeaveGuardChange={setLeaveGuard}
+                authNotice={authNotice} onRetryAuth={() => void verifyUser()} onReauthenticate={() => setReauthOpen(true)} />
+        )
         if (route.page === 'character') return <CharacterPage key={`character-${route.characterId}`} characterId={route.characterId} onLoaded={setLoadedCharacter} />
         if (!auth.user) return (
             <main>
@@ -202,12 +210,13 @@ export default function App() {
     return (
         <>
             <SiteHeader isAdmin={isAdmin} editHref={route.page === 'character' && loadedCharacter === route.characterId ? characterEditPath(route.characterId) : undefined}
-                busy={auth.status === 'checking' || workOwner !== null || (isEdit && editorBusy)} signingOut={signingOut}
+                busy={auth.status === 'checking' || workOwner !== null || mainSortOwner !== null || (isEdit && editorBusy)} signingOut={signingOut}
                 navigate={navigate} onLogin={() => setReauthOpen(true)} onLogout={() => void logout()} />
             {logoutError && <p className="card pdLg" role="alert">{logoutError}</p>}
             {isAdmin && !isEdit && (cleanupNotice || getPendingImageCleanupCount() > 0) && (
                 <div className="globalNotice">
-                    <ImageCleanupNotice message={cleanupNotice} workLock={workLock} canWrite={canWrite} blocked={!isAdmin || signingOut} onCleared={() => setCleanupNotice(null)} />
+                    <ImageCleanupNotice message={cleanupNotice} workLock={workLock} sortLock={route.page === 'main' ? mainSortLock : undefined}
+                        canWrite={canWrite} blocked={!isAdmin || signingOut} onCleared={() => setCleanupNotice(null)} />
                 </div>
             )}
             {content()}

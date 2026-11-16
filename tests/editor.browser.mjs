@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const phase = 5
+const phase = 6
 async function findChrome() {
     const candidates = process.env.CHROME_PATH ? [process.env.CHROME_PATH] : process.platform === 'win32'
         ? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe')]
@@ -36,7 +36,8 @@ const initial = (id = 1) => ({
     keywords: [{ id: id * 100 + 30, sort_order: 1, content: `키워드${id}` }],
     feed: [{ id: id * 100 + 20, sort_order: 1, image_path: `feed/${id}/first.png` }, { id: id * 100 + 21, sort_order: 2, image_path: `feed/${id}/second.png` }],
 })
-const mainTheme = { id: 1, main_color: '#c34f78', background_color: '#ffedf4', card_background_color: '#fffafc', typo_color: '#221122' }
+const initialMainTheme = { id: 1, main_color: '#c34f78', background_color: '#ffedf4', card_background_color: '#fffafc', typo_color: '#221122' }
+let mainTheme = structuredClone(initialMainTheme)
 let sites = new Map([[1, initial(1)], [2, initial(2)]])
 let mode = { userStatus: 200, userDelay: 0, tokenDelay: 0 }
 let order = [2, 1], nextCharacterId = 3, nextChildId = 1000
@@ -88,6 +89,30 @@ const api = http.createServer(async (req, res) => {
         return
     }
     if (url.pathname === '/rest/v1/rpc/load_image_references') { send(mode.refStatus ?? 200, mode.refStatus ? { message: 'Mock reference failure' } : references()); return }
+    if (url.pathname === '/rest/v1/rpc/save_character_order') {
+        await pause(mode.orderDelay ?? 0)
+        const { p_expected: expected, p_order: next } = entry.body
+        const current = order.filter(id => sites.has(id))
+        const sameOrder = JSON.stringify(current) === JSON.stringify(next)
+        const sameMembers = JSON.stringify([...current].sort()) === JSON.stringify([...next].sort())
+        if (mode.orderFailure || !sameMembers || (!sameOrder && JSON.stringify(current) !== JSON.stringify(expected))) {
+            send(400, { code: 'P0001', message: mode.orderFailure || 'character_order_conflict' }); return
+        }
+        order = [...next]
+        if (mode.orderDropResponse) { mode.orderDropResponse = false; await loseResponse(); return }
+        send(200, order); return
+    }
+    if (url.pathname === '/rest/v1/rpc/save_main_theme') {
+        await pause(mode.themeDelay ?? 0)
+        const { p_expected: expected, p_data: next } = entry.body
+        const sameColors = (first, second) => ['main_color', 'background_color', 'card_background_color', 'typo_color'].every(key => first[key] === second[key])
+        if (mode.themeFailure || (!sameColors(mainTheme, next) && (!sameColors(mainTheme, expected) || expected.id !== 1))) {
+            send(400, { code: 'P0001', message: mode.themeFailure || 'main_theme_conflict' }); return
+        }
+        mainTheme = { id: 1, ...next }
+        if (mode.themeDropResponse) { mode.themeDropResponse = false; await loseResponse(); return }
+        send(200, mainTheme); return
+    }
     if (url.pathname === '/rest/v1/rpc/reserve_character_id') {
         const requestId = entry.body.p_request_id
         if (!reservations.has(requestId)) reservations.set(requestId, nextCharacterId++)
@@ -217,6 +242,7 @@ try {
     const reset = async (authenticated = true, destination = '/characters/1/edit') => {
         mode = { userStatus: 200, userDelay: 0, tokenDelay: 0 }
         sites = new Map([[1, initial(1)], [2, initial(2)]])
+        mainTheme = structuredClone(initialMainTheme)
         order = [2, 1]; nextCharacterId = 3; nextChildId = 1000; reservations = new Map(); creations = new Map(); deletions = new Map(); objects = new Set(references())
         acceptDialog = true
         await js(`Object.keys(localStorage).filter(key=>key.startsWith('profileManage:cleanup:')).forEach(key=>localStorage.removeItem(key))`)
@@ -242,6 +268,8 @@ try {
     check(await js(`[...document.querySelectorAll('.character')].map(a=>a.getAttribute('href')).join('|')==='/characters/2|/characters/1'`), '메인 카드가 RPC의 여러 캐릭터·저장 순서와 주소를 사용')
     check(await selectedColor() === mainTheme.main_color, '메인 화면이 캐릭터와 별개의 저장된 메인 테마 사용')
     check(await js(`!document.querySelector('.headerEditLink') && ![...document.querySelectorAll('button,a')].some(e=>/^(순서 저장|캐릭터 추가|테마 저장)$/.test(e.textContent.trim()))`), '방문자에게 관리자 컨트롤 숨김')
+    check(await js(`!document.querySelector('main .dragHandle') && !document.querySelector('[data-theme]')`)
+        && !requests.some(request => /\/rpc\/save_(character_order|main_theme)$/.test(request.path)), '비로그인 메인은 드래그·테마 입력·쓰기 요청 없음')
     check(await js(`getComputedStyle(document.querySelector('.siteHeader')).height==='50px' && getComputedStyle(document.querySelector('.headerLoginButton')).height==='30px'`), '데스크톱 헤더와 버튼 높이 유지')
     await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
     check(await js(`getComputedStyle(document.querySelector('.siteHeader')).height==='40px' && getComputedStyle(document.body).paddingTop==='40px' && getComputedStyle(document.querySelector('.headerLoginButton')).height==='24px'`), '모바일 고정 헤더·본문 오프셋 일치')
@@ -476,6 +504,170 @@ try {
 
     await reset(true, '/characters/999/edit'); await until(`document.body.innerText.includes('찾을 수')`, 'missing editor')
     check(!await hasEditor(), '없는 캐릭터 수정 경로가 다른 캐릭터 편집기로 대체되지 않음')
+
+    const cardOrder = () => js(`[...document.querySelectorAll('.character')].map(card=>Number(card.getAttribute('href').split('/').at(-1)))`)
+    const mainReady = async () => {
+        await until(`document.querySelectorAll('.character').length===2 && document.querySelectorAll('main .dragHandle').length===2 && document.querySelectorAll('[data-theme]').length===4`, 'main management ready')
+    }
+    const mainUnlocked = () => until(`document.querySelector('main')?.getAttribute('aria-busy')!=='true' && !!document.querySelector('.headerLogoutButton:not(:disabled)')`, 'main mutation completed')
+    const orderButton = `[...document.querySelectorAll('main button')].find(button=>button.textContent.trim()==='순서 저장')`
+    const reorderMainKeyboard = async (direction = 'ArrowDown', cancel = false) => {
+        await focus('main .dragHandle'); await key('Space', ' '); await key(direction); await key(cancel ? 'Escape' : 'Space', cancel ? 'Escape' : ' ')
+    }
+    const pointerReorderMain = async (touch = false) => {
+        await js(`document.querySelector('main .sortableList').scrollIntoView({block:'center'})`)
+        const points = await js(`[...document.querySelectorAll('main .dragHandle')].slice(0,2).map(button=>{const r=button.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}})`)
+        const [start, end] = points
+        if (touch) await cdp('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 1, ...start }] })
+        else await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', ...start, button: 'left', buttons: 1, clickCount: 1 })
+        for (let step = 1; step <= 6; step++) {
+            const point = { x: start.x, y: start.y + (end.y - start.y) * step / 6 }
+            if (touch) await cdp('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ id: 1, ...point }] })
+            else await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point, buttons: 1 })
+            await pause(70)
+        }
+        if (touch) await cdp('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+        else await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', ...end, button: 'left', buttons: 0, clickCount: 1 })
+        await pause(250)
+    }
+
+    await reset(true, '/'); await mainReady()
+    const mainWriteStart = writeCalls('save_character_order').length + writeCalls('save_main_theme').length
+    check(await js(`!(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented})()`), '메인 초기 조회 상태는 미저장 이탈 경고 없음')
+    await reorderMainKeyboard('ArrowDown', true)
+    check(JSON.stringify(await cardOrder()) === '[2,1]' && order.join() === '2,1', '메인 키보드 정렬 취소는 화면·DB 순서를 유지')
+    await reorderMainKeyboard()
+    check(JSON.stringify(await cardOrder()) === '[1,2]' && order.join() === '2,1'
+        && writeCalls('save_character_order').length + writeCalls('save_main_theme').length === mainWriteStart, '메인 키보드 드래그는 저장 버튼 전까지 로컬 순서만 변경')
+    await set('[data-theme="--main-color"]', '#112233')
+    check(await selectedColor() === '#112233' && mainTheme.main_color === initialMainTheme.main_color, '메인 테마 편집은 CSS 미리보기만 적용하고 DB 저장은 대기')
+    check(await js(`(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented})()`), '메인 순서·테마 초안도 새로고침 이탈 경고 대상')
+    const beforeOrderTheme = structuredClone(mainTheme), beforeCharacters = JSON.stringify([...sites])
+    await button('^순서 저장$'); await untilRequests(() => order.join() === '1,2', 'main order save'); await mainUnlocked()
+    const orderCall = writeCalls('save_character_order').at(-1)
+    check(JSON.stringify(orderCall.body) === JSON.stringify({ p_expected: [2, 1], p_order: [1, 2] }), '메인 순서 저장은 기준·변경 ID 배열만 새 RPC에 전달')
+    check(mainTheme.main_color === beforeOrderTheme.main_color && await js(`document.querySelector('[data-theme="--main-color"]').value==='#112233'`), '순서 저장이 미저장 메인 테마 초안을 초기화하거나 저장하지 않음')
+    await reorderMainKeyboard()
+    check(JSON.stringify(await cardOrder()) === '[2,1]', '순서 저장 후 새 기준으로 다시 순서 편집 가능')
+    await button('^테마 저장$'); await untilRequests(() => mainTheme.main_color === '#112233', 'main theme save'); await mainUnlocked()
+    check(JSON.stringify(await cardOrder()) === '[2,1]' && order.join() === '1,2', '메인 테마 저장이 미저장 카드 순서를 초기화하거나 저장하지 않음')
+    const themeCall = writeCalls('save_main_theme').at(-1)
+    check(themeCall.body.p_expected.id === 1 && themeCall.body.p_expected.main_color === initialMainTheme.main_color
+        && themeCall.body.p_data.main_color === '#112233' && !('id' in themeCall.body.p_data) && JSON.stringify([...sites]) === beforeCharacters, '메인 테마 RPC는 메인 기준·4색상만 저장하고 캐릭터 내용·테마는 독립 유지')
+    await button('^순서 저장$'); await untilRequests(() => order.join() === '2,1', 'second main order save'); await mainUnlocked()
+    check(await js(`!(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented})()`), '각각 저장을 마친 메인 초안은 이탈 경고 해제')
+    await navigate('/'); await mainReady()
+    check(JSON.stringify(await cardOrder()) === '[2,1]' && await selectedColor() === '#112233', '메인 순서·테마는 재조회 후에도 저장 상태 유지')
+    await nativeClick('a[href="/characters/2"]'); await until(`!!document.querySelector('.profileName')`, 'profile after main save')
+    check(await selectedColor() === initial(2).theme.main_color, '저장된 메인 테마가 개별 캐릭터 테마를 덮어쓰지 않음')
+    await nativeClick('.homeButton'); await mainReady(); await nativeClick('a[href="/characters/new"]'); await until(`!!document.querySelector('#profileName')`, 'new character inherits saved main theme')
+    check(await selectedColor() === '#112233', '신규 캐릭터 폼은 저장된 최신 메인 테마를 초기값으로 복사')
+
+    await reset(true, '/'); await mainReady(); await pointerReorderMain()
+    check(JSON.stringify(await cardOrder()) === '[1,2]' && order.join() === '2,1', '메인 카드 포인터 드래그가 카드 이동 없이 로컬 순서 변경')
+    const mainDialogs = dialogs.length
+    await nativeClick('a[href="/characters/new"]'); await pause(100)
+    check(await js(`location.pathname==='/'`) && dialogs.length === mainDialogs + 1 && JSON.stringify(await cardOrder()) === '[1,2]', '미저장 순서 상태에서 캐릭터 추가 이동 취소 시 메인 초안 유지')
+    await nativeClick('a[href="/characters/1"]'); await pause(100)
+    check(await js(`location.pathname==='/'`) && JSON.stringify(await cardOrder()) === '[1,2]', '미저장 순서 상태에서 카드 링크 이동 취소 시 초안 유지')
+    const touchWriteStart = writeCalls('save_character_order').length
+    await reset(true, '/'); await mainReady()
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+    await cdp('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 })
+    await pointerReorderMain(true)
+    check(JSON.stringify(await cardOrder()) === '[1,2]' && writeCalls('save_character_order').length === touchWriteStart, '모바일 터치 드래그도 저장 전까지 로컬 순서만 변경')
+    check(await js(`document.documentElement.scrollWidth<=innerWidth && !document.querySelector('.character button')`), '관리자 모바일 카드·일반 이동 버튼에 가로 넘침·중첩 버튼 없음')
+    await cdp('Emulation.setTouchEmulationEnabled', { enabled: false })
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1100, deviceScaleFactor: 1, mobile: false })
+
+    await reset(true, '/'); await mainReady(); await reorderMainKeyboard(); await set('[data-theme="--main-color"]', '#334455')
+    mode.orderDelay = 1000
+    const busyOrderStart = writeCalls('save_character_order').length, busyThemeStart = writeCalls('save_main_theme').length
+    await button('^순서 저장'); await button('^순서 저장')
+    await untilRequests(() => writeCalls('save_character_order').length > busyOrderStart, 'main busy order')
+    check(await js(`document.querySelector('.headerLogoutButton').disabled && [...document.querySelectorAll('main .dragHandle,main [data-theme]')].every(element=>element.matches(':disabled'))`), '메인 순서 저장 중 드래그·테마 입력·로그아웃 잠금')
+    await button('^테마 저장'); await nativeClick('a[href="/characters/new"]'); await pause(100)
+    check(await js(`location.pathname==='/'`) && writeCalls('save_main_theme').length === busyThemeStart, '순서 저장 중 테마 저장·캐릭터 추가가 동시에 실행되지 않음')
+    await untilRequests(() => order.join() === '1,2', 'busy main order finish'); await mainUnlocked(); mode.orderDelay = 0
+    check(writeCalls('save_character_order').length === busyOrderStart + 1 && await js(`document.querySelector('[data-theme="--main-color"]').value==='#334455'`), '같은 틱 중복 순서 저장 차단과 별도 테마 초안 보존')
+    mode.themeDelay = 800
+    await button('^테마 저장'); await button('^테마 저장')
+    await untilRequests(() => writeCalls('save_main_theme').length > busyThemeStart, 'busy main theme')
+    check(await js(`document.querySelector('.headerLogoutButton').disabled && document.querySelector('main .dragHandle').matches(':disabled')`), '메인 테마 저장 중에도 순서 조작·로그아웃 잠금')
+    await untilRequests(() => mainTheme.main_color === '#334455', 'busy main theme finish'); await mainUnlocked(); mode.themeDelay = 0
+    check(writeCalls('save_main_theme').length === busyThemeStart + 1, '같은 틱 중복 메인 테마 저장은 RPC 한 번만 실행')
+
+    await reset(true, '/'); await mainReady()
+    const sortingWriteStart = writeCalls('save_character_order').length + writeCalls('save_main_theme').length
+    await focus('main .dragHandle'); await key('Space', ' '); await key('ArrowDown')
+    await button('^순서 저장'); await button('^테마 저장'); await nativeClick('a[href="/characters/new"]')
+    check(await js(`location.pathname==='/'`) && writeCalls('save_character_order').length + writeCalls('save_main_theme').length === sortingWriteStart, '메인 드래그 진행 중 저장·캐릭터 추가가 동시에 실행되지 않음')
+    await key('Escape'); await mainUnlocked()
+    check(JSON.stringify(await cardOrder()) === '[2,1]', '메인 드래그 취소 후 동기 잠금 해제와 원래 순서 복원')
+
+    await reset(true, '/'); await mainReady()
+    const invalidThemeStart = writeCalls('save_main_theme').length
+    await set('[data-theme="--main-color"]', 'not-a-color'); await button('^테마 저장'); await pause(100)
+    check(writeCalls('save_main_theme').length === invalidThemeStart && await js(`document.querySelector('[data-theme="--main-color"]').validationMessage.length>0`), '잘못된 메인 헥스코드는 저장 RPC 호출 전 차단')
+    await reorderMainKeyboard(); await button('^순서 저장$'); await untilRequests(() => order.join() === '1,2', 'order independent of invalid theme'); await mainUnlocked()
+    check(await js(`document.querySelector('[data-theme="--main-color"]').value==='not-a-color'`), '메인 테마가 잘못되어도 독립 순서 저장 가능하고 잘못된 초안은 유지')
+
+    await reset(true, '/'); await mainReady(); await reorderMainKeyboard(); await set('[data-theme="--main-color"]', '#667788')
+    sites.set(3, { ...initial(3), profile: { ...initial(3).profile, name: '다른 창 추가' } }); order.push(3)
+    await button('^순서 저장$'); await until(`!!document.querySelector('main [role=alert]')`, 'main membership conflict'); await mainUnlocked()
+    check(order.join() === '2,1,3' && JSON.stringify(await cardOrder()) === '[1,2]' && await js(`document.querySelector('[data-theme="--main-color"]').value==='#667788'`), '다른 창의 캐릭터 추가와 순서 저장 충돌 시 새 카드를 누락시키지 않고 두 초안 보존')
+    await button('편집 내용을 버리고 DB에서 다시 불러오기'); await pause(100)
+    check(JSON.stringify(await cardOrder()) === '[1,2]', '충돌 후 DB 재조회 취소 시 메인 초안 유지')
+    acceptDialog = true; await button('편집 내용을 버리고 DB에서 다시 불러오기'); acceptDialog = false
+    await until(`document.querySelectorAll('.character').length===3`, 'main conflict reload')
+    check(JSON.stringify(await cardOrder()) === '[2,1,3]' && await selectedColor() === initialMainTheme.main_color && !await js(`!!document.querySelector('main [role=alert]')`), '명시적 재조회 승인 후 최신 멤버십·테마 복원과 이전 충돌 안내 초기화')
+
+    await reset(true, '/'); await mainReady(); await set('[data-theme="--main-color"]', '#556677'); await reorderMainKeyboard()
+    mainTheme.main_color = '#fedcba'
+    await button('^테마 저장$'); await until(`!!document.querySelector('main [role=alert]')`, 'main theme conflict'); await mainUnlocked()
+    check(mainTheme.main_color === '#fedcba' && await selectedColor() === '#556677' && JSON.stringify(await cardOrder()) === '[1,2]', '다른 창의 메인 테마 변경을 CAS로 보호하고 테마·순서 초안 보존')
+
+    await reset(true, '/'); await mainReady(); await reorderMainKeyboard()
+    const lostOrderStart = writeCalls('save_character_order').length
+    mode.orderDropResponse = true; await button('^순서 저장$'); await until(`!!document.querySelector('main [role=alert]')`, 'lost main order response'); await mainUnlocked()
+    check(order.join() === '1,2' && JSON.stringify(await cardOrder()) === '[1,2]', '순서 응답 유실에도 서버 반영 가능 결과와 로컬 초안 보존')
+    await button('^순서 저장$'); await mainUnlocked()
+    await untilRequests(() => writeCalls('save_character_order').length === lostOrderStart + 2, 'main order retry')
+    check(JSON.stringify(writeCalls('save_character_order').at(-1).body) === JSON.stringify(writeCalls('save_character_order').at(-2).body), '순서 응답 유실 재시도는 같은 기준·ID 순서로 확인')
+    const lostThemeStart = writeCalls('save_main_theme').length
+    await set('[data-theme="--main-color"]', '#789abc'); mode.themeDropResponse = true; await button('^테마 저장$')
+    await until(`!!document.querySelector('main [role=alert]')`, 'lost main theme response'); await mainUnlocked()
+    check(mainTheme.main_color === '#789abc' && await selectedColor() === '#789abc', '메인 테마 응답 유실 시 CSS·입력 초안 유지')
+    await button('^테마 저장$'); await mainUnlocked()
+    await untilRequests(() => writeCalls('save_main_theme').length === lostThemeStart + 2, 'main theme retry')
+    check(JSON.stringify(writeCalls('save_main_theme').at(-1).body) === JSON.stringify(writeCalls('save_main_theme').at(-2).body), '메인 테마 응답 유실 재시도도 같은 메인 기준·색상으로 확인')
+
+    await reset(true, '/'); await mainReady(); await reorderMainKeyboard(); await set('[data-theme="--main-color"]', '#abcdef')
+    const expiredMainStart = writeCalls('save_character_order').length + writeCalls('save_main_theme').length
+    mode.userStatus = 503; await refresh(); await until(`document.body.innerText.includes('로그인 상태 확인 실패')`, 'main auth verification failed')
+    check(await js(`[...document.querySelectorAll('main .dragHandle,main [data-theme]')].every(element=>element.matches(':disabled'))`)
+        && writeCalls('save_character_order').length + writeCalls('save_main_theme').length === expiredMainStart, '메인 인증 재확인 실패 시 관리 조작·자동 저장 차단')
+    mode.userStatus = 200; await button('다시 확인'); await mainUnlocked()
+    check(JSON.stringify(await cardOrder()) === '[1,2]' && await selectedColor() === '#abcdef', '메인 인증 복구가 미저장 순서·테마를 서버 값으로 덮어쓰지 않음')
+    await externalSignout(); await until(`document.body.innerText.includes('다시 로그인')`, 'main session expired')
+    check(await js(`[...document.querySelectorAll('main .dragHandle,main [data-theme]')].every(element=>element.matches(':disabled'))`), '메인 인증 만료 상태에서는 관리 조작을 숨기거나 잠금')
+    await button('다시 로그인'); await until(`!!document.querySelector('#loginModal')`, 'main reauth modal')
+    await set('#loginModal input', 'test-only-password'); await nativeClick('#loginModal button[type=submit]'); await mainUnlocked()
+    check(JSON.stringify(await cardOrder()) === '[1,2]' && await selectedColor() === '#abcdef'
+        && writeCalls('save_character_order').length + writeCalls('save_main_theme').length === expiredMainStart, '메인 재로그인 복구 후 두 초안 유지·자동 저장 없음')
+    acceptDialog = true; await nativeClick('.headerLogoutButton'); acceptDialog = false
+    await until(`!!document.querySelector('.headerLoginButton:not(:disabled)')`, 'main explicit logout')
+    await until(`document.querySelectorAll('.character').length===2`, 'public main reloaded after logout')
+    check(JSON.stringify(await cardOrder()) === '[2,1]' && await selectedColor() === initialMainTheme.main_color
+        && !await js(`!!document.querySelector('main .dragHandle') || !!document.querySelector('[data-theme]')`), '명시적 로그아웃 승인 시 메인 초안 폐기하고 저장된 공개 순서·테마만 표시')
+
+    await reset(true, '/'); sites.delete(2); order = [1]; await navigate('/')
+    await until(`document.querySelectorAll('.character').length===1`, 'single main character')
+    check(await js(`document.querySelector('main .dragHandle').disabled && ${orderButton}?.disabled`), '캐릭터 한 개에서는 순서 이동·불필요한 순서 저장 비활성')
+    sites.clear(); order = []; await navigate('/'); await until(`document.body.innerText.includes('등록된 캐릭터가 없습니다') && !!document.querySelector('[data-theme]')`, 'empty admin collection')
+    check(await js(`!document.querySelector('.character') && !!document.querySelector('a[href="/characters/new"]')`), '빈 관리자 메인도 캐릭터 추가·메인 테마 편집 접근 가능')
+    await set('[data-theme="--main-color"]', '#224466'); await button('^테마 저장$'); await untilRequests(() => mainTheme.main_color === '#224466', 'empty main theme save'); await mainUnlocked()
+    check(sites.size === 0 && mainTheme.main_color === '#224466', '캐릭터가 없어도 메인 테마 저장을 독립 지원')
 
     await reset(false, '/')
     for (const route of ['/characters/2/edit', '/characters/new', '/edit', '/manage.html']) {

@@ -9,7 +9,7 @@ export default function EditorAuthNotice({ notice, disabled, onRetry, onLogin, o
     disabled: boolean
     onRetry: () => void
     onLogin: () => void
-    onExit: () => void
+    onExit?: () => void
 }) {
     if (!notice) return null
     return (
@@ -19,7 +19,7 @@ export default function EditorAuthNotice({ notice, disabled, onRetry, onLogin, o
                 onClick={notice.requiresLogin ? onLogin : onRetry}>
                 {notice.checking ? '로그인 확인 중…' : notice.requiresLogin ? '다시 로그인' : '다시 확인'}
             </button>
-            <button className="btn h30 border borderRad" type="button" disabled={disabled} onClick={onExit}>메인으로</button>
+            {onExit && <button className="btn h30 border borderRad" type="button" disabled={disabled} onClick={onExit}>메인으로</button>}
         </div>
     )
 }

@@ -28,6 +28,7 @@ interface SortableListProps<Item extends SortableEntry> {
     disabled?: boolean
     listId?: string
     sortLock?: SortLock
+    canActivate?: () => boolean
     getLabel: (item: Item) => string
     onChange: (items: Item[]) => void
     onSortingChange?: (sorting: boolean) => void
@@ -85,7 +86,7 @@ function SortableItem({
 }
 
 export default function SortableList<Item extends SortableEntry>({
-    items, label, className = '', disabled = false, listId: suppliedListId, sortLock, getLabel, onChange, onSortingChange, children,
+    items, label, className = '', disabled = false, listId: suppliedListId, sortLock, canActivate, getLabel, onChange, onSortingChange, children,
 }: SortableListProps<Item>) {
     const contextId = useId()
     const listId = suppliedListId ?? contextId
@@ -121,6 +122,7 @@ export default function SortableList<Item extends SortableEntry>({
     function acquire(event: PointerEvent | KeyboardEvent): boolean {
         if (disabled || items.length < 2) return false
         if (phase.current !== null) return lock.getOwner() === listId
+        if (canActivate?.() === false) return false
         if (!lock.tryStart(listId)) return false
         phase.current = 'pending'
         pointerId.current = event instanceof PointerEvent ? event.pointerId : null
