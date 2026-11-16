@@ -1,9 +1,7 @@
 import { supabase } from '../lib/supabase'
-import { validateImageUpload } from '../utils/uploadLimits'
-import { createCleanupJournal, isCleanupPath } from '../utils/cleanupJournal'
-import { isCharacterId } from '../utils/siteData'
-
-export { imageFileName } from '../utils/imageFileName'
+import { validateUpload } from '../utils/images/limits'
+import { createJournal, isImagePath } from '../utils/images/cleanup'
+import { isCharacterId } from '../utils/character/guards'
 
 const imageBucket = import.meta.env.VITE_SUPABASE_STORAGE_BUCKET?.trim() || 'site-images'
 
@@ -21,7 +19,7 @@ export interface UploadedImage {
 
 const uploadedFiles = new WeakMap<File, Map<string, CachedUpload>>()
 const uploadsByPath = new Map<string, CachedUpload>()
-const pendingCleanup = createCleanupJournal(`${import.meta.env.VITE_SUPABASE_URL?.trim() ?? ''}/${imageBucket}`, () => {
+const pendingCleanup = createJournal(`${import.meta.env.VITE_SUPABASE_URL?.trim() ?? ''}/${imageBucket}`, () => {
     return typeof window === 'undefined' ? null : window.localStorage
 })
 let cleanupInFlight: Promise<boolean> | null = null
@@ -42,15 +40,15 @@ function encodedFileName(name: string): string {
     }).join('')
 }
 
-export function validateImageFile(file: File, folder: ImageFolder, characterId?: number): void {
-    validateImageUpload(file)
+export function validateImage(file: File, folder: ImageFolder, characterId?: number): void {
+    validateUpload(file)
     // Keys contain ASCII only, so string length equals the UTF-8 byte length.
     if (`${folder}/${characterId ?? Number.MAX_SAFE_INTEGER}/${'0'.repeat(36)}--${encodedFileName(file.name)}`.length > 1024) {
         throw new Error('파일명 줄인 후 재시도 요망')
     }
 }
 
-export function queueImageCleanup(paths: Iterable<string>, characterId?: number): void {
+export function queueCleanup(paths: Iterable<string>, characterId?: number): void {
     for (const path of paths) {
         pendingCleanup.add(path, characterId)
         const cached = uploadsByPath.get(path)
@@ -59,20 +57,20 @@ export function queueImageCleanup(paths: Iterable<string>, characterId?: number)
     }
 }
 
-export function getPendingImageCleanupCount(): number {
+export function cleanupCount(): number {
     return pendingCleanup.paths().length
 }
 
-export function imageCleanupWarning(message = '이전 이미지 정리가 남아 있음. 재시도 요망.'): string | null {
-    if (!getPendingImageCleanupCount()) return null
+export function cleanupMessage(message = '이전 이미지 정리가 남아 있음. 재시도 요망.'): string | null {
+    if (!cleanupCount()) return null
     return pendingCleanup.hasPersistenceError()
         ? `${message} 정리 기록 보관 실패. 이 화면에서 정리 재시도 완료 요망.`
         : message
 }
 
-export async function retryImageCleanup(canWrite: () => boolean = () => true): Promise<boolean> {
+export async function retryCleanup(canWrite: () => boolean = () => true): Promise<boolean> {
     if (cleanupInFlight) return cleanupInFlight
-    if (!getPendingImageCleanupCount()) return true
+    if (!cleanupCount()) return true
     if (!supabase || !canWrite()) return false
 
     const client = supabase
@@ -83,7 +81,7 @@ export async function retryImageCleanup(canWrite: () => boolean = () => true): P
         let retained: Set<string>
         try {
             const { data, error } = await client.rpc('load_image_references').abortSignal(AbortSignal.timeout(10000))
-            if (error || !Array.isArray(data) || data.some(path => typeof path !== 'string' || !isCleanupPath(path))) return false
+            if (error || !Array.isArray(data) || data.some(path => typeof path !== 'string' || !isImagePath(path))) return false
             retained = new Set(data)
         } catch {
             return false
@@ -108,7 +106,7 @@ export async function retryImageCleanup(canWrite: () => boolean = () => true): P
                 // A failed delete is safe to retry, including after a lost response.
             }
         }
-        return getPendingImageCleanupCount() === 0
+        return cleanupCount() === 0
     })()
 
     try {
@@ -138,7 +136,7 @@ async function imageIsAbsent(path: string, canWrite: () => boolean): Promise<boo
 export async function uploadImage(file: File, folder: ImageFolder, characterId: number): Promise<UploadedImage> {
     if (!supabase) throw new Error('사이트 연결 설정 확인 요망')
     if (!isCharacterId(characterId)) throw new Error('캐릭터 주소를 확인해 주세요.')
-    validateImageFile(file, folder, characterId)
+    validateImage(file, folder, characterId)
     const cacheKey = `${characterId}:${folder}`
     const cached = uploadedFiles.get(file)?.get(cacheKey)
     if (cached?.reusable) return { path: cached.path, newlyUploaded: false }
@@ -153,7 +151,7 @@ export async function uploadImage(file: File, folder: ImageFolder, characterId: 
         if (error) throw error
     } catch (error) {
         // No RPC can reference this path yet, even if the upload response was lost.
-        queueImageCleanup([path], characterId)
+        queueCleanup([path], characterId)
         throw new Error(`이미지 “${file.name}” 업로드 실패. 연결 및 권한 확인 후 재시도 요망.`, { cause: error })
     }
 

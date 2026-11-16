@@ -31,7 +31,7 @@ const hasAdminEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)
 const hasAdminUserId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(adminUserId)
     && adminUserId !== '00000000-0000-0000-0000-000000000000'
 
-export const authConfigurationError: string | null = !supabase
+export const authConfigError: string | null = !supabase
     ? 'Supabase 연결 설정을 완료해 주세요.'
     : !hasAdminEmail || !hasAdminUserId
         ? '관리자 계정 설정을 완료해 주세요.'
