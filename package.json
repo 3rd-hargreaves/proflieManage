@@ -14,6 +14,7 @@
         "test:security:browser": "node tests/security.browser.mjs",
         "test:services": "vitest run",
         "test:migration": "node --test tests/multiCharacterMigration.test.mjs",
+        "test:rpc": "node --test tests/characterRpc.test.mjs",
         "preview": "vite preview"
     },
     "dependencies": {

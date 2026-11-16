@@ -4,6 +4,8 @@
 
 ## 준비 파일
 
+3단계 RPC·RLS·Storage 및 쓰기 재개/차단 절차는 [캐릭터 API 안내](CHARACTER_API.md)에 정리했다. 3단계 migration을 적용해도 쓰기 게이트와 Storage 점검 정책은 닫힌 상태로 유지된다. 운영 전환에서 별도 소유자용 `multi-character-enable-writes.sql`을 실행하기 전까지 열지 않는다.
+
 | 파일 | 역할 |
 |---|---|
 | `multi-character-preflight.sql` | 읽기 전용 스키마·권한·제약·행 수·시퀀스·이미지 메타데이터 점검 |
