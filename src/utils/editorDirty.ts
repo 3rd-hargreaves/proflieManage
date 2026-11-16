@@ -1,4 +1,5 @@
 import type { SiteData, SiteEditDraft } from '../types/site'
+import { themeFields } from './theme.ts'
 
 export function isEditorDirty(site: SiteData | null, draft: SiteEditDraft | null): boolean {
     if (!site || !draft) return false
@@ -7,10 +8,7 @@ export function isEditorDirty(site: SiteData | null, draft: SiteEditDraft | null
         || draft.profile.statusMessage !== site.profile.status_message
         || draft.profile.imagePath !== site.profile.profile_image_path
         || draft.keywords !== site.keywords.map(keyword => keyword.content).join(', ')) return true
-    if (draft.theme.mainColor !== site.theme.main_color
-        || draft.theme.backgroundColor !== site.theme.background_color
-        || draft.theme.cardBackgroundColor !== site.theme.card_background_color
-        || draft.theme.typoColor !== site.theme.typo_color) return true
+    if (themeFields.some(({ key, column }) => draft.theme[key] !== site.theme[column])) return true
     if (draft.sections.length !== site.sections.length || draft.feed.length !== site.feed.length) return true
     return draft.sections.some((section, index) => {
         const saved = site.sections[index]

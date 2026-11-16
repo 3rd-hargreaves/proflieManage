@@ -18,9 +18,7 @@
         "test:security:browser": "node tests/security.browser.mjs",
         "test:browser:tools": "node --test tests/browserTools.test.mjs",
         "test:services": "vitest run",
-        "test:migration": "node --test tests/multiCharacterMigration.test.mjs",
         "test:rpc": "node --test tests/characterRpc.test.mjs",
-        "test:rehearsal:db": "node --test tests/rehearsalDatabase.test.mjs",
         "test:rehearsal:browser": "node tests/rehearsal.integration.mjs supabase/.temp/profile-stage7-stack/credentials.json",
         "preview": "vite preview"
     },

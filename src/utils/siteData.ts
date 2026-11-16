@@ -1,5 +1,6 @@
 import type { MainData, SiteData, SiteTheme } from '../types/site'
 import { isHexColor } from './validation'
+import { themeFields } from './theme'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -25,8 +26,7 @@ function isProfile(value: unknown): value is Record<string, unknown> {
 
 export function isSiteTheme(value: unknown): value is SiteTheme {
     return isRecord(value) && isCharacterId(value.id)
-        && ['main_color', 'background_color', 'card_background_color', 'typo_color'].every(key =>
-            typeof value[key] === 'string' && isHexColor(value[key]))
+        && themeFields.every(({ column }) => typeof value[column] === 'string' && isHexColor(value[column]))
 }
 
 function isOrderedList(value: unknown, validFields: (row: Record<string, unknown>) => boolean): boolean {

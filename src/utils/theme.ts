@@ -1,5 +1,5 @@
 import type { SiteTheme, ThemeColors } from '../types/site'
-import { isHexColor } from './validation'
+import { isHexColor } from './validation.ts'
 
 export const themeFields = [
     { key: 'mainColor', column: 'main_color', variable: '--main-color', label: '메인' },

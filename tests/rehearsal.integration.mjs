@@ -4,7 +4,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { createHash } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import { createRehearsalBrowser } from './helpers/rehearsalBrowser.mjs'
 
@@ -16,10 +15,8 @@ const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQ
 const markup = '  *실제 볼드* _밑줄_ /기울임/ -가로줄-\n| 실제 | 표 |\n원문 보존  '
 let browser, temp, build, admin, anon, other, config
 const created = new Set()
-const fixtureCleanup = new Set()
 let baseline
 
-const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 
 function safeError(error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -94,12 +91,12 @@ try {
     check(otherSigned.data.user.id !== config.adminUserId, '실제 Auth 관리자·일반 사용자 계정을 분리')
     baseline = await rpc(anon, 'load_main')
     const initialId = config.initialCharacterId || baseline.characters[0]?.id
-    assert.ok(Number.isSafeInteger(initialId), 'A migrated legacy character must exist.')
+    assert.ok(Number.isSafeInteger(initialId), 'An initial rehearsal character must exist.')
     const original = await rpc(anon, 'load_character', { p_character_id: initialId })
-    assert.ok(original, 'Migrated character must be publicly readable.')
-    check(baseline.characters.some(row => row.id === initialId), '실제 REST 공개 조회가 이전된 캐릭터·메인 테마 반환')
-    const legacyPath = original.profile.profile_image_path || original.feed[0]?.image_path
-    if (legacyPath) check((await publicBytes(legacyPath))?.length > 0, '이전 이미지 경로의 실제 Storage 공개 URL 다운로드 가능')
+    assert.ok(original, 'The initial rehearsal character must be publicly readable.')
+    check(baseline.characters.some(row => row.id === initialId), '실제 REST 공개 조회가 기존 캐릭터·메인 테마 반환')
+    const baselineImagePath = original.profile.profile_image_path || original.feed[0]?.image_path
+    if (baselineImagePath) check((await publicBytes(baselineImagePath))?.length > 0, '기존 이미지 경로의 실제 Storage 공개 URL 다운로드 가능')
     for (const [name, client] of [['anon', anon], ['other-user', other]]) {
         const { error } = await client.rpc('save_main_theme', { p_expected: baseline.theme, p_data: {
             main_color: '#102030', background_color: '#ffffff', card_background_color: '#ffffff', typo_color: '#111111',
@@ -112,29 +109,6 @@ try {
     temp = await fs.mkdtemp(path.join(os.tmpdir(), 'profile-rehearsal-integration-'))
     const dist = path.join(temp, 'dist'), picture = path.join(temp, '실제 업로드.png'), secondPicture = path.join(temp, '둘째 사진.png')
     await fs.writeFile(picture, image); await fs.writeFile(secondPicture, image)
-    const fixturePath = `feed/${initialId}/${crypto.randomUUID()}--backup.png`
-    fixtureCleanup.add(fixturePath)
-    const fixtureUploaded = await admin.storage.from(config.storageBucket || 'site-images').upload(fixturePath, image, { contentType: 'image/png', cacheControl: '0', upsert: false })
-    assert.equal(fixtureUploaded.error, null, 'The isolated binary backup fixture must upload.')
-    const downloaded = await publicBytes(fixturePath)
-    assert.ok(downloaded?.equals(image), 'The fixture must be downloaded from the real Storage service before backup.')
-    const manifestFile = path.join(temp, 'binary-backup.json')
-    await fs.writeFile(path.join(temp, 'binary-backup.png'), downloaded)
-    await fs.writeFile(manifestFile, JSON.stringify({ version: 1, path: fixturePath, file: 'binary-backup.png', bytes: downloaded.length, sha256: sha256(downloaded) }))
-    await removeUnused([fixturePath])
-    check(await publicBytes(fixturePath) === null, '미참조 검증 파일을 실제 Storage에서 삭제해 파일 백업과 분리')
-    const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8'))
-    assert.equal(manifest.version, 1); assert.equal(manifest.path, fixturePath); assert.equal(manifest.file, 'binary-backup.png')
-    const restoredBytes = await fs.readFile(path.join(temp, manifest.file))
-    assert.equal(restoredBytes.length, manifest.bytes); assert.equal(sha256(restoredBytes), manifest.sha256)
-    const restoredFile = await admin.storage.from(config.storageBucket || 'site-images').upload(manifest.path, restoredBytes, { contentType: 'image/png', cacheControl: '0', upsert: false })
-    assert.equal(restoredFile.error, null, 'The fixture must restore from the saved binary and manifest.')
-    const restoredDownload = await publicBytes(manifest.path)
-    check(restoredDownload?.length === manifest.bytes && sha256(restoredDownload) === manifest.sha256 && restoredDownload.equals(downloaded),
-        '임시 binary·manifest 백업을 읽어 같은 경로로 복원한 실제 파일의 SHA256·bytes 일치')
-    await removeUnused([fixturePath]); fixtureCleanup.delete(fixturePath)
-    check(await publicBytes(fixturePath) === null && (!legacyPath || (await publicBytes(legacyPath))?.length > 0),
-        '파일 복원 리허설의 미참조 테스트 파일만 최종 정리하고 기존 참조 파일 보존')
     await buildProduction(dist, {
         VITE_SUPABASE_URL: api.origin, VITE_SUPABASE_PUBLISHABLE_KEY: config.publishableKey,
         VITE_ADMIN_EMAIL: config.adminEmail, VITE_ADMIN_USER_ID: config.adminUserId,
@@ -147,7 +121,7 @@ try {
     assert.ok(sourcePolicy?.includes(`https://${productionRef}.supabase.co`))
     const headers = sourceHeaders.map(header => header.key.toLowerCase() === 'content-security-policy'
         ? { ...header, value: header.value.replaceAll(`https://${productionRef}.supabase.co`, api.origin) } : header)
-    browser = await createRehearsalBrowser({ project, dist, headers, rewrites: deployment.rewrites, apiOrigin: api.origin })
+    browser = await createRehearsalBrowser({ dist, headers, rewrites: deployment.rewrites, apiOrigin: api.origin })
     const { js, until, navigate, set, click, button, cdp } = browser
     const ready = () => until(`!!document.querySelector('.headerLogoutButton:not(:disabled)') && document.querySelector('main')?.getAttribute('aria-busy')!=='true'`, 'authenticated UI unlocked')
     const submit = () => js(`document.querySelector('main form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`)
@@ -207,7 +181,7 @@ try {
     check(updated.profile.profile_image_path !== first.profile.profile_image_path && await publicBytes(first.profile.profile_image_path) === null,
         '이미지 교체 커밋 후 실제 Storage의 미사용 이전 프로필 정리')
     const originalAfter = await read(initialId)
-    check(JSON.stringify(originalAfter) === JSON.stringify(original), '다른 캐릭터 수정·이미지 정리가 이전된 캐릭터 내용에 영향 없음')
+    check(JSON.stringify(originalAfter) === JSON.stringify(original), '다른 캐릭터 수정·이미지 정리가 기존 캐릭터 내용에 영향 없음')
 
     const secondId = await createUi(`${uniqueName}-둘째`, false)
     await navigate('/'); await until(`document.querySelectorAll('main .dragHandle').length>=3`, 'main ordering tools')
@@ -257,7 +231,7 @@ try {
     }
     check((await rpc(admin, 'load_image_references')).every(file => !deletionPaths.includes(file)) && (await Promise.all(deletionPaths.map(publicBytes))).every(bytes => bytes === null),
         '삭제된 테스트 캐릭터의 프로필·피드 실파일 정리와 전역 참조 해제')
-    if (legacyPath) check((await publicBytes(legacyPath))?.length > 0, '다른 캐릭터 삭제 후 이전 이미지 공개 URL 계속 보존')
+    if (baselineImagePath) check((await publicBytes(baselineImagePath))?.length > 0, '다른 캐릭터 삭제 후 기존 이미지 공개 URL 계속 보존')
     await click('.headerLogoutButton'); await until(`!!document.querySelector('.headerLoginButton:not(:disabled)')`, 'real logout')
     check(await js(`!document.querySelector('[data-theme]') && !document.querySelector('main .dragHandle')`), '실제 Auth 로그아웃 후 메인 관리 기능 숨김')
     await navigate(`/characters/${initialId}/edit`); await until(`location.pathname==='/' && !!document.querySelector('.headerLoginButton:not(:disabled)')`, 'unauthenticated route guard')
@@ -290,7 +264,6 @@ try {
                 await removeUnused(result.cleanup_candidates)
             } catch (error) { console.error(`Rehearsal character cleanup failed: ${safeError(error)}`); process.exitCode = 1 }
         }
-        try { await removeUnused([...fixtureCleanup]) } catch (error) { console.error(`Rehearsal binary fixture cleanup failed: ${safeError(error)}`); process.exitCode = 1 }
         if (baseline) {
             try {
                 const current = await rpc(anon, 'load_main')

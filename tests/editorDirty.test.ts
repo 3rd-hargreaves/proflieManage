@@ -39,9 +39,13 @@ test('text edits become clean again when reverted', () => {
 })
 test('theme and keyword changes count as unsaved edits', () => {
     const { site, draft } = fixture()
-    draft.theme.mainColor = '#456'
-    assert.equal(isEditorDirty(site, draft), true)
-    draft.theme.mainColor = site.theme.main_color
+    for (const key of ['mainColor', 'backgroundColor', 'cardBackgroundColor', 'typoColor'] as const) {
+        const saved = draft.theme[key]
+        draft.theme[key] += ' '
+        assert.equal(isEditorDirty(site, draft), true)
+        draft.theme[key] = saved
+        assert.equal(isEditorDirty(site, draft), false)
+    }
     draft.keywords += ', 새 키워드'
     assert.equal(isEditorDirty(site, draft), true)
 })

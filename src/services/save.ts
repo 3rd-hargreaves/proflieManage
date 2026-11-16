@@ -10,18 +10,18 @@ import type { WriteGuard } from './write'
 
 export { getPendingImageCleanupCount } from './storage'
 export interface SaveResult { site: SiteData, cleanupWarning: string | null }
+type CreationState =
+    | { phase: 'idle' }
+    | { phase: 'reserved', characterId: number }
+    | { phase: 'prepared' | 'uncertain', characterId: number, payload: SiteSaveData, uploadPaths: string[], submittedDraft: SiteEditDraft }
+    | { phase: 'confirmed', site: SiteData, savedDraft: SiteEditDraft }
+
 export interface CreationContext {
     requestId: string
-    characterId: number | null
-    pendingPayload: SiteSaveData | null
-    pendingUploadPaths: string[]
-    creationUncertain: boolean
-    submittedDraft: SiteEditDraft | null
-    savedDraft: SiteEditDraft | null
-    confirmedSite: SiteData | null
+    state: CreationState
 }
 export function createCharacterContext(): CreationContext {
-    return { requestId: crypto.randomUUID(), characterId: null, pendingPayload: null, pendingUploadPaths: [], creationUncertain: false, submittedDraft: null, savedDraft: null, confirmedSite: null }
+    return { requestId: crypto.randomUUID(), state: { phase: 'idle' } }
 }
 function isDefiniteRejection(error: unknown): boolean {
     return !!error && typeof error === 'object' && 'code' in error
@@ -135,62 +135,64 @@ function adoptCreatedIds(draft: SiteEditDraft, submitted: SiteEditDraft, site: S
 export async function createCharacter(draft: SiteEditDraft, context: CreationContext, canWrite: WriteGuard = allowWrite): Promise<SaveResult> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     ensureWrite(canWrite)
-    if (!context.pendingPayload && !context.confirmedSite) {
+    let state = context.state
+    if (state.phase === 'idle' || state.phase === 'reserved') {
         validate(draft)
-        if (context.characterId === null) {
+        if (state.phase === 'idle') {
             try {
                 ensureWrite(canWrite)
                 const { data, error } = await supabase.rpc('reserve_character_id', { p_request_id: context.requestId })
                 if (error) throw error
                 if (!isCharacterId(data)) throw new Error('invalid_reservation_response')
-                context.characterId = data
+                state = context.state = { phase: 'reserved', characterId: data }
             } catch (error) { throw writeError(error) }
         }
+        const characterId = state.characterId
         const emptyBaseline: SiteData = {
-            profile: { id: context.characterId, name: '', status_message: '', profile_image_path: null },
-            theme: { id: context.characterId, main_color: '', background_color: '', card_background_color: '', typo_color: '' },
+            profile: { id: characterId, name: '', status_message: '', profile_image_path: null },
+            theme: { id: characterId, main_color: '', background_color: '', card_background_color: '', typo_color: '' },
             sections: [], keywords: [], feed: [],
         }
-        const uploaded = await uploadData(draft, emptyBaseline, context.characterId, canWrite)
-        context.pendingPayload = { ...uploaded.payload,
-            sections: uploaded.payload.sections.map(row => ({ ...row, id: null })),
-            keywords: uploaded.payload.keywords.map(row => ({ ...row, id: null })),
-            feed: uploaded.payload.feed.map(row => ({ ...row, id: null })),
+        const uploaded = await uploadData(draft, emptyBaseline, characterId, canWrite)
+        state = context.state = {
+            phase: 'prepared', characterId, uploadPaths: uploaded.newPaths, submittedDraft: snapshotDraft(draft),
+            payload: { ...uploaded.payload,
+                sections: uploaded.payload.sections.map(row => ({ ...row, id: null })),
+                keywords: uploaded.payload.keywords.map(row => ({ ...row, id: null })),
+                feed: uploaded.payload.feed.map(row => ({ ...row, id: null })),
+            },
         }
-        context.pendingUploadPaths = uploaded.newPaths
-        context.submittedDraft = snapshotDraft(draft)
     }
-    const characterId = context.characterId
-    if (!isCharacterId(characterId)) throw new Error('새 캐릭터 예약 정보를 확인해 주세요.')
-    if (!context.confirmedSite) {
+    if (state.phase !== 'confirmed') {
+        const pending = state
+        const characterId = pending.characterId
+        if (!isCharacterId(characterId)) throw new Error('새 캐릭터 예약 정보를 확인해 주세요.')
         let attempted = false
+        let site: SiteData
         try {
             ensureWrite(canWrite)
             attempted = true
-            const { data, error } = await supabase.rpc('create_character', { p_character_id: characterId, p_request_id: context.requestId, p_data: context.pendingPayload })
+            const { data, error } = await supabase.rpc('create_character', { p_character_id: characterId, p_request_id: context.requestId, p_data: pending.payload })
             if (error) throw error
-            context.confirmedSite = savedEnvelope(data, characterId, new Set()).character
-            context.savedDraft = context.submittedDraft
+            site = savedEnvelope(data, characterId, new Set()).character
         } catch (error) {
             // Validation precedes receipt lookup in the RPC. Even a later
             // validation rejection cannot disprove an earlier unknown commit.
-            if (attempted && !isDefiniteRejection(error)) context.creationUncertain = true
-            if (!context.creationUncertain && isDefiniteRejection(error) && record(error) && !['42501', 'PGRST202'].includes(String(error.code))) {
-                queueImageCleanup(context.pendingUploadPaths, characterId)
-                context.pendingPayload = null
-                context.pendingUploadPaths = []
-                context.submittedDraft = null
+            if (attempted && !isDefiniteRejection(error)) context.state = { ...pending, phase: 'uncertain' }
+            if (pending.phase !== 'uncertain' && isDefiniteRejection(error) && record(error) && !['42501', 'PGRST202'].includes(String(error.code))) {
+                queueImageCleanup(pending.uploadPaths, characterId)
+                context.state = { phase: 'reserved', characterId }
                 if (canWrite()) await retryImageCleanup(canWrite)
             }
             throw writeError(error)
         }
+        state = context.state = { phase: 'confirmed', site, savedDraft: pending.submittedDraft }
     }
-    const site = context.confirmedSite
-    const submitted = context.savedDraft ?? context.submittedDraft
-    if (submitted && !sameDraft(submitted, draft)) {
-        const result = await saveCharacter(characterId, adoptCreatedIds(draft, submitted, site), site, canWrite)
-        context.confirmedSite = result.site
-        context.savedDraft = snapshotDraft(draft)
+    const { site, savedDraft } = state
+    const characterId = site.profile.id
+    if (!sameDraft(savedDraft, draft)) {
+        const result = await saveCharacter(characterId, adoptCreatedIds(draft, savedDraft, site), site, canWrite)
+        context.state = { phase: 'confirmed', site: result.site, savedDraft: snapshotDraft(draft) }
         return result
     }
     return cleanedResult(site, [], characterId, canWrite)

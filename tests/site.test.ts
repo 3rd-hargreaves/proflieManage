@@ -67,6 +67,13 @@ it('reports a database error without returning its partial data', async () => {
     await expect(loadCharacter(1, new AbortController().signal)).rejects.toMatchObject({ cause: error })
 })
 
+it.each(['main_color', 'background_color', 'card_background_color', 'typo_color'] as const)('rejects invalid character theme field %s', async column => {
+    const data = fixture()
+    data.theme[column] = 'invalid-color'
+    api.abortSignal.mockResolvedValue({ data, error: null })
+    await expect(loadCharacter(1, new AbortController().signal)).rejects.toThrow('사이트 정보를 불러오지 못했습니다')
+})
+
 it('reports a rejected network request as a load failure', async () => {
     api.abortSignal.mockRejectedValue(new TypeError('Network unavailable'))
     await expect(loadCharacter(1, new AbortController().signal)).rejects.toThrow('사이트 정보를 불러오지 못했습니다')

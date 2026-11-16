@@ -1,4 +1,4 @@
-import { readFile, readdir } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PGlite } from '@electric-sql/pglite'
@@ -73,29 +73,29 @@ export async function rpc(db, name, args = [], { role = 'authenticated', userId 
         `select public.${name}(${args.map((_, index) => `$${index + 1}`).join(',')})`, parameters))
 }
 
-export async function createCharacterDatabase({ activated = true, empty = false } = {}) {
+export async function createCharacterDatabase({ activated = true, empty = false, seed = true } = {}) {
     const db = new PGlite()
     try {
         await db.exec(bootstrap)
-        for (const name of ['schema.sql', 'read.sql', 'save.sql']) await db.exec(await sqlFile(name))
-        await db.exec(`update public.profile set name='첫 캐릭터', status_message='기존 상태', profile_image_path='profile/legacy.png';
-            update public.theme set main_color='#7841ab';
+        await db.exec(await sqlFile('schema.sql'))
+        if (seed) await db.exec(`
+            insert into public.characters(id,sort_order,name,status_message,profile_image_path,creation_request_id)
+                values(1,1,'첫 캐릭터','기존 상태','profile/legacy.png',gen_random_uuid());
+            insert into public.character_themes(character_id,main_color) values(1,'#7841ab');
+            select setval('public.characters_id_seq',1,true);
             insert into storage.objects(bucket_id,name) values
                 ('site-images','profile/legacy.png'),('site-images','feed/first.png'),('site-images','feed/second.png');`)
-        if (!empty) await db.exec(`
-            insert into public.sections(id,sort_order,title,content) overriding system value
-                values(10,1,'첫 제목','  원문\n*볼드* _밑줄_\n  '),(11,2,'둘째 제목','둘째 내용');
-            insert into public.keywords(id,sort_order,content) overriding system value values(30,1,'첫 키워드');
-            insert into public.feed_images(id,sort_order,image_path) overriding system value
-                values(20,1,'feed/first.png'),(21,2,'feed/second.png');
+        if (seed && !empty) await db.exec(`
+            insert into public.sections(id,character_id,sort_order,title,content) overriding system value
+                values(10,1,1,'첫 제목','  원문\n*볼드* _밑줄_\n  '),(11,1,2,'둘째 제목','둘째 내용');
+            insert into public.keywords(id,character_id,sort_order,content) overriding system value values(30,1,1,'첫 키워드');
+            insert into public.feed_images(id,character_id,sort_order,image_path) overriding system value
+                values(20,1,1,'feed/first.png'),(21,1,2,'feed/second.png');
             select setval('public.sections_id_seq',100,true);
             select setval('public.keywords_id_seq',100,true);
             select setval('public.feed_images_id_seq',100,true);
         `)
-        await db.exec(`set app.multi_character_maintenance='on'`)
-        const names = (await readdir(path.join(projectRoot, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort()
-        for (const name of names) await applySql(db, await sqlFile(`migrations/${name}`))
-        if (activated) await applySql(db, await sqlFile('multi-character-enable-writes.sql'))
+        if (!activated) await db.exec('update private.character_api_control set writes_enabled=false where id=1')
         return db
     } catch (error) {
         await db.close()

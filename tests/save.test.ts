@@ -244,10 +244,11 @@ describe('creation and deletion retries',()=>{
             .mockResolvedValueOnce({data:null,error:{code,message:code==='42501'?'character_admin_required':'invalid_character_data'}})
             .mockImplementationOnce(async()=>({data:{character:original,cleanup_candidates:[]},error:null}))
         await expect(createCharacter(draft,ctx)).rejects.toThrow()
-        const pending=structuredClone(ctx.pendingPayload)
+        const pending=structuredClone(writes('create_character')[0][1].p_data)
+        expect(ctx.state).toMatchObject({phase:'uncertain',payload:pending})
         draft.profile.name='새 로그인 후 수정'
         await expect(createCharacter(draft,ctx)).rejects.toThrow(code==='42501'?'권한':'올바르지')
-        expect(ctx.pendingPayload).toEqual(pending)
+        expect(ctx.state).toMatchObject({phase:'uncertain',payload:pending})
         expect(api.remove).not.toHaveBeenCalled()
         const result=await createCharacter(draft,ctx)
         expect(result.site.profile.name).toBe('새 로그인 후 수정');expect(api.reserve).toHaveBeenCalledTimes(1)
@@ -258,6 +259,7 @@ describe('creation and deletion retries',()=>{
         const {createCharacter,createCharacterContext}=await import('../src/services/save');const draft=newDraft();const ctx=createCharacterContext()
         const bad={...draft,profile:{...draft.profile,name:' '}}
         await expect(createCharacter(bad,ctx)).rejects.toThrow('이름');expect(api.rpc).not.toHaveBeenCalled()
+        expect(ctx.state).toEqual({phase:'idle'})
         draft.profile.file=png();draft.sections[0].databaseId=999
         const result=await createCharacter(draft,ctx)
         expect(api.reserve).toHaveBeenCalledWith({p_request_id:ctx.requestId})
@@ -289,12 +291,13 @@ describe('creation and deletion retries',()=>{
         draft.profile.name=' '
         await expect(createCharacter(draft,ctx)).rejects.toThrow('이름')
         expect(writes('create_character')).toHaveLength(2);expect(writes()).toHaveLength(0)
-        expect(ctx.confirmedSite?.profile.id).toBe(2);expect(draft.profile.name).toBe(' ')
+        expect(ctx.state).toMatchObject({phase:'confirmed',site:{profile:{id:2}}});expect(draft.profile.name).toBe(' ')
     })
     it('permits corrected input after a definite transaction rejection while retaining the reservation',async()=>{
         const {createCharacter,createCharacterContext}=await import('../src/services/save');const draft=newDraft();const ctx=createCharacterContext()
         api.write.mockResolvedValueOnce({data:null,error:{code:'22023',message:'invalid_character_data'}})
         await expect(createCharacter(draft,ctx)).rejects.toThrow('올바르지')
+        expect(ctx.state).toEqual({phase:'reserved',characterId:2})
         draft.profile.name='고친 이름';const result=await createCharacter(draft,ctx)
         expect(result.site.profile.name).toBe('고친 이름');expect(api.reserve).toHaveBeenCalledTimes(1)
     })
@@ -305,7 +308,7 @@ describe('creation and deletion retries',()=>{
         api.remove.mockResolvedValueOnce({data:null,error:{message:'offline'}})
         await expect(createCharacter(draft,ctx)).rejects.toThrow('올바르지')
         const rejectedPaths=api.upload.mock.calls.map(([path])=>path)
-        expect(ctx.pendingPayload).toBeNull();expect(getPendingImageCleanupCount()).toBe(2)
+        expect(ctx.state).toEqual({phase:'reserved',characterId:2});expect(getPendingImageCleanupCount()).toBe(2)
         expect(api.remove).toHaveBeenCalledWith(rejectedPaths)
         draft.profile.file=code==='22023'?png('replacement.png'):profile;draft.feed=[]
         const result=await createCharacter(draft,ctx)
@@ -321,7 +324,28 @@ describe('creation and deletion retries',()=>{
             .mockResolvedValueOnce({data:null,error:{code:'P0001',message:'character_conflict'}})
         await expect(createCharacter(draft,ctx)).rejects.toThrow();draft.profile.name='보존할 수정'
         await expect(createCharacter(draft,ctx)).rejects.toThrow('다른 창')
-        expect(draft.profile.name).toBe('보존할 수정');expect(ctx.confirmedSite?.profile.id).toBe(2)
+        expect(draft.profile.name).toBe('보존할 수정');expect(ctx.state).toMatchObject({phase:'confirmed',site:{profile:{id:2}}})
+    })
+    it('reuses a reserved ID after an upload failure without reserving another character',async()=>{
+        const {createCharacter,createCharacterContext}=await import('../src/services/save');const draft=newDraft();draft.profile.file=png();const ctx=createCharacterContext()
+        api.upload.mockRejectedValueOnce(new Error('upload failure'))
+        await expect(createCharacter(draft,ctx)).rejects.toThrow('업로드 실패')
+        expect(ctx.state).toEqual({phase:'reserved',characterId:2});expect(writes('create_character')).toHaveLength(0)
+        const result=await createCharacter(draft,ctx)
+        expect(result.site.profile.id).toBe(2);expect(api.reserve).toHaveBeenCalledTimes(1)
+        expect(api.upload).toHaveBeenCalledTimes(2);expect(ctx.state).toMatchObject({phase:'confirmed',site:result.site})
+    })
+    it.each(['42501','PGRST202'])('retains the prepared payload after %s and confirms it before saving subsequent edits',async(code)=>{
+        const {createCharacter,createCharacterContext}=await import('../src/services/save');const draft=newDraft();draft.profile.file=png();const ctx=createCharacterContext()
+        api.write.mockResolvedValueOnce({data:null,error:{code,message:'unavailable'}})
+        await expect(createCharacter(draft,ctx)).rejects.toThrow(code==='42501'?'권한':'아직 준비')
+        const submitted=structuredClone(writes('create_character')[0][1])
+        expect(ctx.state).toMatchObject({phase:'prepared',payload:submitted.p_data});expect(api.remove).not.toHaveBeenCalled()
+        draft.profile.name='권한 복구 후 편집'
+        const result=await createCharacter(draft,ctx)
+        expect(writes('create_character')[1][1]).toEqual(submitted)
+        expect(result.site.profile.name).toBe('권한 복구 후 편집');expect(api.reserve).toHaveBeenCalledTimes(1);expect(api.upload).toHaveBeenCalledTimes(1)
+        expect(ctx.state).toMatchObject({phase:'confirmed',site:result.site,savedDraft:{profile:{name:'권한 복구 후 편집'}}})
     })
     it('retains deletion baseline after response loss and cleans only the confirmed receipt paths',async()=>{
         const {deleteCharacter,getPendingImageCleanupCount}=await import('../src/services/save');const {expected}=fixture()

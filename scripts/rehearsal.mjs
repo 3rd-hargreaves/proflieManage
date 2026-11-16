@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient } from '@supabase/supabase-js'
@@ -37,7 +37,6 @@ async function run(command, args, input) {
 
 const supabaseCli = args => run(process.execPath, [cli, ...args, '--workdir', workdir])
 const sql = text => run('docker', ['exec', '-i', container, 'psql', '-X', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-At'], text)
-const literal = value => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 const json = async file => JSON.parse(await readFile(file, 'utf8'))
 
@@ -62,9 +61,7 @@ async function assertReady(config) {
     const state = await json(statePath)
     assert.equal(state.rehearsal, true)
     assert.equal(state.project, project)
-    for (const name of (await readdir(path.join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql'))) {
-        assert.equal(state.migrationHashes?.[name], digest(await readFile(path.join(root, 'supabase/migrations', name))), 'Rehearsal migrations changed; rerun their rehearsal before using this database')
-    }
+    if (state.schemaHash) assert.equal(state.schemaHash, digest(await readFile(path.join(root, 'supabase/schema.sql'))), 'schema.sql changed; recreate the isolated local database before preparing it again')
     const catalog = JSON.parse((await sql(`select jsonb_build_object(
         'database',current_database(),
         'tables',to_regclass('public.characters') is not null and to_regclass('public.character_themes') is not null and to_regclass('public.main_theme') is not null and to_regclass('private.character_api_control') is not null,
@@ -72,7 +69,7 @@ async function assertReady(config) {
         'write_api',to_regprocedure('public.create_character(bigint,uuid,jsonb)') is not null and to_regprocedure('public.save_character(bigint,jsonb,jsonb)') is not null and to_regprocedure('public.delete_character(bigint,jsonb)') is not null and to_regprocedure('public.save_character_order(jsonb,jsonb)') is not null and to_regprocedure('public.save_main_theme(jsonb,jsonb)') is not null
     );`)).toString())
     assert.equal(catalog.database, 'postgres')
-    assert(catalog.tables && catalog.read_api && catalog.write_api, 'Rehearsal database is not migrated; refusing to start the frontend')
+    assert(catalog.tables && catalog.read_api && catalog.write_api, 'Rehearsal schema is not initialized; refusing to start the frontend')
     assert.equal((await sql('select writes_enabled from private.character_api_control where id=1;')).toString().trim(), 't', 'Rehearsal writes are not enabled')
     const client = createClient(config.apiUrl, config.publishableKey, { auth: { persistSession: false, autoRefreshToken: false } })
     const response = await client.rpc('load_main').abortSignal(AbortSignal.timeout(10000))
@@ -106,7 +103,7 @@ async function start() {
     return status
 }
 
-async function prepare(snapshotPath) {
+async function prepare() {
     const status = await start()
     let config
     try { config = await json(configPath) } catch (error) {
@@ -129,6 +126,18 @@ async function prepare(snapshotPath) {
     }
     assert.equal(state.rehearsal, true)
     assert.equal(state.project, project)
+    assert(Array.isArray(state.completed), 'Invalid rehearsal setup state')
+    const schema = await readFile(path.join(root, 'supabase/schema.sql'), 'utf8')
+    if (state.schemaHash) assert.equal(state.schemaHash, digest(schema), 'schema.sql changed; recreate the isolated local database before preparing it again')
+    const existing = (await sql("select to_regclass('public.characters') is not null;")).toString().trim() === 't'
+    if (existing) {
+        assert(state.completed.includes('accounts') && (['current-schema', 'existing-local-fixture'].includes(state.setup) || state.completed.includes('verify-migration')), 'Refusing to adopt an unrecognized existing local application')
+        await assertReady(config)
+        state.setup ??= 'existing-local-fixture'
+    } else {
+        assert.equal((await sql("select to_regclass('public.profile') is null and to_regclass('public.theme') is null;")).toString().trim(), 't', 'Refusing to initialize over legacy application data')
+        state.setup = 'current-schema'
+    }
     async function step(name, action) {
         if (state.completed.includes(name)) return
         await action()
@@ -145,64 +154,43 @@ async function prepare(snapshotPath) {
             if (result.error) throw new Error('Could not create isolated rehearsal accounts', { cause: result.error })
         }
     })
-    await step('legacy-schema', async () => {
-        const present = (await sql("select to_regclass('public.profile') is not null or to_regclass('public.characters') is not null;")).toString().trim()
-        assert.equal(present, 'f', 'Refusing to seed a database with pre-existing application data')
-        for (const name of ['schema.sql', 'read.sql', 'save.sql']) await sql(await readFile(path.join(root, 'supabase', name), 'utf8'))
-    })
-    await step('offline-data', async () => {
-        assert(snapshotPath, 'Pass a private offline snapshot file to prepare the rehearsal')
-        const snapshot = await json(path.resolve(snapshotPath))
-        assert(snapshot.site?.profile && snapshot.site?.theme && snapshot.sequences)
-        let text = 'begin; delete from public.sections; delete from public.keywords; delete from public.feed_images; delete from public.profile; delete from public.theme;'
-        for (const table of ['profile', 'theme']) text += `insert into public.${table} select * from jsonb_populate_record(null::public.${table},${literal(snapshot.site[table])});`
-        for (const [table, key] of [['sections', 'sections'], ['keywords', 'keywords'], ['feed_images', 'feed']]) {
-            text += `insert into public.${table} overriding system value select * from jsonb_populate_recordset(null::public.${table},${literal(snapshot.site[key])});`
-            const sequence = snapshot.sequences[table]
-            assert.match(String(sequence.last_value), /^\d+$/)
-            assert.equal(typeof sequence.is_called, 'boolean')
-            text += `select setval('public.${table}_id_seq',${sequence.last_value},${sequence.is_called});`
-        }
-        await sql(text + 'commit;')
-    })
-    await step('binary-fixtures', async () => {
-        const snapshot = JSON.parse((await sql('select public.load_site();')).toString())
-        const paths = new Set([snapshot.profile.profile_image_path, ...snapshot.feed.map(row => row.image_path)].filter(Boolean))
-        const manifest = []
-        for (const name of paths) {
-            assert.match(name, /^(profile|feed)\/[^\r\n]+$/)
-            const uploaded = await owner.storage.from(config.storageBucket).upload(name, png, { contentType: 'image/png', upsert: false })
-            if (uploaded.error) {
-                const downloaded = await owner.storage.from(config.storageBucket).download(name)
-                assert(!downloaded.error && digest(Buffer.from(await downloaded.data.arrayBuffer())) === digest(png), 'Existing rehearsal image differs')
-            }
-            manifest.push({ path: name, sha256: digest(png), contentType: 'image/png', bytes: png.toString('base64') })
-        }
-        // Paths are from the offline export; bytes are explicitly synthetic fixtures.
-        await writeFile(path.join(workdir, 'binary-fixtures.json'), JSON.stringify({ synthetic: true, files: manifest }, null, 4))
-    })
-    await step('legacy-backup', async () => {
-        const backup = await run('docker', ['exec', container, 'pg_dump', '-U', 'postgres', '-d', 'postgres', '-Fc'])
-        await writeFile(path.join(workdir, 'legacy-postgres.dump'), backup)
-        await writeFile(path.join(workdir, 'legacy-snapshot.json'), await sql('select public.load_site();'))
-    })
-    const migrations = (await readdir(path.join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort()
-    state.migrationHashes ??= {}
-    for (const name of migrations) {
-        const content = await readFile(path.join(root, 'supabase/migrations', name), 'utf8')
-        if (state.completed.includes(name)) assert.equal(state.migrationHashes[name], digest(content), 'Applied rehearsal migration differs from the working tree')
-        await step(name, async () => {
-            await sql(`set app.multi_character_maintenance='on';\n${content}`)
-            state.migrationHashes[name] = digest(content)
-        })
-    }
-    await step('verify-migration', async () => {
-        const before = await json(path.join(workdir, 'legacy-snapshot.json'))
-        const after = JSON.parse((await sql('select public.load_character(1);')).toString())
-        assert.equal(digest(JSON.stringify(after)), digest(JSON.stringify(before)), 'Migration must preserve the complete offline character')
-        await sql(`set app.multi_character_maintenance='on';\n${await readFile(path.join(root, 'supabase/multi-character-enable-writes.sql'), 'utf8')}`)
+    if (!existing) await step('schema', async () => {
+        await sql(schema)
         await sql("notify pgrst, 'reload schema';")
     })
+    const admin = createClient(config.apiUrl, config.publishableKey, { auth: { persistSession: false, autoRefreshToken: false } })
+    const signed = await admin.auth.signInWithPassword({ email: config.adminEmail, password: config.adminPassword })
+    assert(!signed.error && signed.data.user.id === adminId, 'Isolated admin authentication failed')
+    async function rpc(name, args = {}) {
+        const { data, error } = await admin.rpc(name, args).abortSignal(AbortSignal.timeout(10000))
+        if (error) throw new Error('Could not prepare current-schema rehearsal fixtures', { cause: error })
+        return data
+    }
+    try {
+        const main = await rpc('load_main')
+        if (!main.characters.length) {
+            const requestId = randomUUID()
+            const characterId = await rpc('reserve_character_id', { p_request_id: requestId })
+            const profile = 'profile/' + characterId + '/' + requestId + '--fixture.png'
+            const feed = 'feed/' + characterId + '/' + requestId + '--fixture.png'
+            for (const name of [profile, feed]) {
+                const result = await admin.storage.from(config.storageBucket).upload(name, png, { contentType: 'image/png', upsert: false })
+                assert(!result.error, 'Could not upload isolated synthetic fixture')
+            }
+            await rpc('create_character', { p_character_id: characterId, p_request_id: requestId, p_data: {
+                profile: { name: '검증 캐릭터', status_message: '로컬 통합 검사 전용', profile_image_path: profile },
+                theme: Object.fromEntries(Object.entries(main.theme).filter(([key]) => key !== 'id')),
+                sections: [{ id: null, title: '기본 섹션', content: '검증용 본문' }],
+                keywords: [{ id: null, content: '검증' }], feed: [{ id: null, image_path: feed }],
+            } })
+            config.initialCharacterId = characterId
+        } else if (!main.characters.some(character => character.id === config.initialCharacterId)) {
+            config.initialCharacterId = main.characters[0].id
+        }
+    } finally { await admin.auth.signOut({ scope: 'local' }) }
+    state.schemaHash = digest(schema)
+    await writeFile(statePath, JSON.stringify(state, null, 4))
+    await writeFile(configPath, JSON.stringify(config, null, 4))
     await assertReady(config)
     const env = `VITE_SUPABASE_URL=${config.apiUrl}\nVITE_SUPABASE_PUBLISHABLE_KEY=${config.publishableKey}\nVITE_ADMIN_EMAIL=${config.adminEmail}\nVITE_ADMIN_USER_ID=${config.adminUserId}\nVITE_SUPABASE_STORAGE_BUCKET=${config.storageBucket}\n`
     await writeFile(path.join(root, '.env.rehearsal.local'), env)
@@ -227,11 +215,11 @@ async function dev() {
 
 try {
     const command = process.argv[2]
-    if (command === 'prepare') await prepare(process.argv[3])
+    if (command === 'prepare') { assert(!process.argv[3], 'Current-schema preparation uses synthetic fixtures and accepts no snapshot file'); await prepare() }
     else if (command === 'dev') await dev()
     else if (command === 'check') { await assertContainer(); await assertReady(await json(configPath)); console.log('Local rehearsal database and REST API are ready.') }
     else if (command === 'stop') { await assertContainer(); await supabaseCli(['stop']); console.log('Stopped the isolated rehearsal stack; data volumes retained.') }
-    else throw new Error('Usage: rehearsal.mjs prepare <private-offline-snapshot.json> | check | dev | stop')
+    else throw new Error('Usage: rehearsal.mjs prepare | check | dev | stop')
 } catch (error) {
     console.error(error.message)
     process.exitCode = 1

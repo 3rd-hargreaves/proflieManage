@@ -18,7 +18,21 @@ async function noRowsOrDenied(action) {
     }
 }
 
-test('stage 3 is read-ready but writes remain closed until explicit owner activation', async () => {
+test('fresh schema starts empty and refuses destructive reinitialization', async () => {
+    await withDatabase({ seed: false }, async db => {
+        const initial = await main(db, publicVisitor)
+        assert.deepEqual(initial.characters, [])
+        assert.equal(initial.theme.main_color, '#E45C9A')
+        const created = await createCharacter(db)
+        const before = await main(db, publicVisitor)
+        assert.equal(before.characters[0].id, created.id)
+        const schema = await sqlFile('schema.sql')
+        await assert.rejects(() => applySql(db, schema), /application_schema_already_exists/)
+        assert.deepEqual(await main(db, publicVisitor), before)
+    })
+})
+
+test('owner can pause and resume writes while public reads stay available', async () => {
     await withDatabase({ activated: false }, async db => {
         assert.equal((await main(db, publicVisitor)).characters[0].id, 1)
         assert.equal((await load(db, 1, publicVisitor)).profile.name, '첫 캐릭터')
@@ -27,11 +41,7 @@ test('stage 3 is read-ready but writes remain closed until explicit owner activa
         await noRowsOrDenied(() => asRole(db, 'authenticated', adminId,
             () => db.query(`update private.character_api_control set writes_enabled=true where id=1 returning id`)))
         assert.equal(await value(db, `select writes_enabled from private.character_api_control where id=1`), false)
-        await db.exec(`reset app.multi_character_maintenance`)
-        const activation = await sqlFile('multi-character-enable-writes.sql')
-        await assert.rejects(() => applySql(db, activation), /maintenance_required/)
-        await db.exec(`set app.multi_character_maintenance='on'`)
-        await applySql(db, await sqlFile('multi-character-enable-writes.sql'))
+        await db.exec('begin; select pg_advisory_xact_lock(70431862911507); update private.character_api_control set writes_enabled=true where id=1; commit;')
         assert.ok(await rpc(db, 'reserve_character_id', [crypto.randomUUID()]))
     })
 })
@@ -52,8 +62,8 @@ test('visitors and other authenticated accounts can read only public character d
         await noRowsOrDenied(() => asRole(db, 'anon', null, () => db.query('select name from storage.objects')))
         await noRowsOrDenied(() => asRole(db, 'authenticated', otherUserId,
             () => db.query(`select * from private.character_creation_requests`)))
-        assert.equal(await value(db, `select has_function_privilege('authenticated','public.save_site(jsonb,jsonb)','EXECUTE')`), false)
-        assert.equal(await value(db, `select has_function_privilege('anon','public.load_site()','EXECUTE')`), false)
+        assert.equal(await value(db, `select to_regprocedure('public.save_site(jsonb,jsonb)') is null`), true)
+        assert.equal(await value(db, `select to_regprocedure('public.load_site()') is null`), true)
     })
 })
 const awaitableSentinel = { profile: { id: 1 }, theme: {}, sections: [], keywords: [], feed: [] }
@@ -70,21 +80,6 @@ test('restrictive Storage guards survive additional permissive mutation policies
         await noRowsOrDenied(() => asRole(db, 'authenticated', adminId,
             () => db.query(`update storage.objects set name='profile/renamed.png' where name='profile/legacy.png' returning name`)))
         assert.equal(await value(db, `select count(*)::int from storage.objects where name='profile/legacy.png'`), 1)
-    })
-})
-
-test('Storage audit reports only old unreferenced files across all current characters', async () => {
-    await withDatabase({}, async db => {
-        const second = await createCharacter(db, blankData('두 번째'))
-        const file = imagePath('profile', second.character.profile.id)
-        await uploadMetadata(db, file)
-        const data = saveData(second.character)
-        data.profile.profile_image_path = file
-        await rpc(db, 'save_character', [second.character.profile.id, second.character, data])
-        await db.query(`insert into storage.objects(bucket_id,name) values('site-images',$1)`, ['feed/unreferenced-old.png'])
-        await db.exec(`update storage.objects set created_at=now()-interval '2 days', updated_at=now()-interval '2 days'`)
-        const result = await db.exec(await sqlFile('storage-audit.sql'))
-        assert.deepEqual(result.at(-1).rows.map(row => row.name), ['feed/unreferenced-old.png'])
     })
 })
 
@@ -328,7 +323,7 @@ test('invalid payloads and excessive new feeds fail atomically while grandfather
 
 test('disabling writes blocks RPC and Storage again without disabling public reads', async () => {
     await withDatabase({}, async db => {
-        await applySql(db, await sqlFile('multi-character-disable-writes.sql'))
+        await db.exec('begin; select pg_advisory_xact_lock(70431862911507); update private.character_api_control set writes_enabled=false where id=1; commit;')
         const first = await load(db, 1, publicVisitor)
         await assert.rejects(() => rpc(db, 'save_character', [1, first, saveData(first)]), /writes_disabled/)
         await assert.rejects(() => rpc(db, 'reserve_character_id', [crypto.randomUUID()]), /writes_disabled/)
