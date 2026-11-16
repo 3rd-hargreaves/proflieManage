@@ -1,15 +1,15 @@
 import type { SupabaseClient, User } from '@supabase/supabase-js'
-import { adminEmail, adminUserId, authConfigurationError, supabase } from '../lib/supabase'
+import { adminEmail, adminUserId, authConfigError, supabase } from '../lib/supabase'
 
 function getAuthClient(): SupabaseClient {
-    if (authConfigurationError || !supabase) {
-        throw new Error(authConfigurationError ?? 'Supabase 연결 설정 완료 요망')
+    if (authConfigError || !supabase) {
+        throw new Error(authConfigError ?? 'Supabase 연결 설정 완료 요망')
     }
     return supabase
 }
 
 export function isAdmin(user: User | null): boolean {
-    return !authConfigurationError
+    return !authConfigError
         && !!user
         && user.id.toLowerCase() === adminUserId
         && user.email?.toLowerCase() === adminEmail
@@ -47,7 +47,7 @@ export async function signOut(): Promise<void> {
 }
 
 export async function getAdminUser(): Promise<User | null> {
-    if (authConfigurationError || !supabase) return null
+    if (authConfigError || !supabase) return null
 
     const { data, error } = await supabase.auth.getUser()
     if (error) {

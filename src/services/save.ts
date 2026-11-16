@@ -1,26 +1,26 @@
 import { supabase } from '../lib/supabase'
-import type { SiteData, SiteEditDraft } from '../types/site'
-import { buildSaveData, validateSiteDraft } from '../utils/siteDraft'
-import type { SiteSaveData } from '../utils/siteDraft'
-import { isCharacterId, isSiteData } from '../utils/siteData'
-import { isCleanupPath } from '../utils/cleanupJournal'
-import { imageCleanupWarning, queueImageCleanup, retryImageCleanup, uploadImage, validateImageFile } from './storage'
+import type { Character, Draft } from '../types/models'
+import { toSaveData, validateDraft } from '../utils/character/draft'
+import type { SaveData } from '../utils/character/draft'
+import { isCharacterId, isCharacter } from '../utils/character/guards'
+import { isImagePath } from '../utils/images/cleanup'
+import { cleanupMessage, queueCleanup, retryCleanup, uploadImage, validateImage } from './storage'
 import { allowWrite, ensureWrite, writeError } from './write'
 import type { WriteGuard } from './write'
 
-export { getPendingImageCleanupCount } from './storage'
-export interface SaveResult { site: SiteData, cleanupWarning: string | null }
-type CreationState =
+export { cleanupCount } from './storage'
+export interface SaveResult { site: Character, cleanupWarning: string | null }
+type CreateState =
     | { phase: 'idle' }
     | { phase: 'reserved', characterId: number }
-    | { phase: 'prepared' | 'uncertain', characterId: number, payload: SiteSaveData, uploadPaths: string[], submittedDraft: SiteEditDraft }
-    | { phase: 'confirmed', site: SiteData, savedDraft: SiteEditDraft }
+    | { phase: 'prepared' | 'uncertain', characterId: number, payload: SaveData, uploadPaths: string[], submittedDraft: Draft }
+    | { phase: 'confirmed', site: Character, savedDraft: Draft }
 
-export interface CreationContext {
+export interface CreateContext {
     requestId: string
-    state: CreationState
+    state: CreateState
 }
-export function createCharacterContext(): CreationContext {
+export function createContext(): CreateContext {
     return { requestId: crypto.randomUUID(), state: { phase: 'idle' } }
 }
 function isDefiniteRejection(error: unknown): boolean {
@@ -31,7 +31,7 @@ function isSaveRolledBack(error: unknown): boolean {
     return isDefiniteRejection(error) || (record(error) && error.code === 'P0001'
         && ['character_conflict', 'character_not_found'].includes(String(error.message)))
 }
-function imagePaths(site: SiteData): Set<string> {
+function imagePaths(site: Character): Set<string> {
     const paths = new Set(site.feed.map(image => image.image_path))
     if (site.profile.profile_image_path) paths.add(site.profile.profile_image_path)
     return paths
@@ -40,25 +40,25 @@ function record(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 function cleanupPaths(value: unknown, candidates: Set<string>): value is string[] {
-    return Array.isArray(value) && value.every(path => typeof path === 'string' && isCleanupPath(path) && candidates.has(path))
+    return Array.isArray(value) && value.every(path => typeof path === 'string' && isImagePath(path) && candidates.has(path))
 }
-function savedEnvelope(value: unknown, characterId: number, candidates: Set<string>): { character: SiteData, cleanup_candidates: string[] } {
-    if (!record(value) || !isSiteData(value.character) || value.character.profile.id !== characterId
+function savedEnvelope(value: unknown, characterId: number, candidates: Set<string>): { character: Character, cleanup_candidates: string[] } {
+    if (!record(value) || !isCharacter(value.character) || value.character.profile.id !== characterId
         || !cleanupPaths(value.cleanup_candidates, candidates)) throw new Error('invalid_save_response')
     return { character: value.character, cleanup_candidates: value.cleanup_candidates }
 }
-function validate(draft: SiteEditDraft, savedFeedCount = 0, characterId?: number) {
-    const issues = validateSiteDraft(draft, savedFeedCount)
+function validate(draft: Draft, savedFeedCount = 0, characterId?: number) {
+    const issues = validateDraft(draft, savedFeedCount)
     if (issues.length) throw new Error(issues[0].message)
-    if (draft.profile.file) validateImageFile(draft.profile.file, 'profile', characterId)
-    for (const image of draft.feed) if (image.file) validateImageFile(image.file, 'feed', characterId)
+    if (draft.profile.file) validateImage(draft.profile.file, 'profile', characterId)
+    for (const image of draft.feed) if (image.file) validateImage(image.file, 'feed', characterId)
 }
-async function cleanedResult(site: SiteData, paths: Iterable<string>, characterId: number, canWrite: WriteGuard): Promise<SaveResult> {
-    queueImageCleanup(paths, characterId)
-    const cleaned = canWrite() && await retryImageCleanup(canWrite)
-    return { site, cleanupWarning: cleaned ? null : imageCleanupWarning('내용은 저장됐지만 이전 이미지 정리가 완료되지 않았습니다. 이미지 정리를 다시 시도해 주세요.') }
+async function cleanedResult(site: Character, paths: Iterable<string>, characterId: number, canWrite: WriteGuard): Promise<SaveResult> {
+    queueCleanup(paths, characterId)
+    const cleaned = canWrite() && await retryCleanup(canWrite)
+    return { site, cleanupWarning: cleaned ? null : cleanupMessage('내용은 저장됐지만 이전 이미지 정리가 완료되지 않았습니다. 이미지 정리를 다시 시도해 주세요.') }
 }
-async function uploadData(draft: SiteEditDraft, expected: SiteData, characterId: number, canWrite: WriteGuard): Promise<{ payload: SiteSaveData, newPaths: string[] }> {
+async function uploadData(draft: Draft, expected: Character, characterId: number, canWrite: WriteGuard): Promise<{ payload: SaveData, newPaths: string[] }> {
     const newPaths: string[] = []
     let profile = draft.profile.imagePath
     const feed: string[] = []
@@ -83,16 +83,16 @@ async function uploadData(draft: SiteEditDraft, expected: SiteData, characterId:
     } catch (error) {
         // Cached paths may belong to an earlier ambiguous save. Only this
         // attempt's never-submitted uploads are classified as unused here.
-        queueImageCleanup(newPaths, characterId)
-        if (canWrite()) await retryImageCleanup(canWrite)
+        queueCleanup(newPaths, characterId)
+        if (canWrite()) await retryCleanup(canWrite)
         throw error
     }
-    return { payload: buildSaveData(draft, expected, { profile, feed }), newPaths }
+    return { payload: toSaveData(draft, expected, { profile, feed }), newPaths }
 }
-export async function saveCharacter(characterId: number, draft: SiteEditDraft, expected: SiteData, canWrite: WriteGuard = allowWrite): Promise<SaveResult> {
+export async function saveCharacter(characterId: number, draft: Draft, expected: Character, canWrite: WriteGuard = allowWrite): Promise<SaveResult> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     ensureWrite(canWrite)
-    if (!isCharacterId(characterId) || !isSiteData(expected) || expected.profile.id !== characterId) throw new Error('수정할 캐릭터를 확인해 주세요.')
+    if (!isCharacterId(characterId) || !isCharacter(expected) || expected.profile.id !== characterId) throw new Error('수정할 캐릭터를 확인해 주세요.')
     validate(draft, expected.feed.length, characterId)
     const { payload, newPaths } = await uploadData(draft, expected, characterId, canWrite)
     let envelope
@@ -103,8 +103,8 @@ export async function saveCharacter(characterId: number, draft: SiteEditDraft, e
         envelope = savedEnvelope(data, characterId, imagePaths(expected))
     } catch (error) {
         if (isSaveRolledBack(error)) {
-            queueImageCleanup(newPaths, characterId)
-            if (canWrite()) await retryImageCleanup(canWrite)
+            queueCleanup(newPaths, characterId)
+            if (canWrite()) await retryCleanup(canWrite)
         }
         throw writeError(error)
     }
@@ -112,14 +112,14 @@ export async function saveCharacter(characterId: number, draft: SiteEditDraft, e
     const candidates = new Set([...envelope.cleanup_candidates, ...Array.from(imagePaths(expected)).filter(path => !retained.has(path))])
     return cleanedResult(envelope.character, candidates, characterId, canWrite)
 }
-function snapshotDraft(draft: SiteEditDraft): SiteEditDraft {
+function snapshotDraft(draft: Draft): Draft {
     return { ...draft, profile: { ...draft.profile }, theme: { ...draft.theme }, sections: draft.sections.map(row => ({ ...row })), feed: draft.feed.map(row => ({ ...row })) }
 }
-function sameDraft(first: SiteEditDraft, current: SiteEditDraft): boolean {
+function sameDraft(first: Draft, current: Draft): boolean {
     return JSON.stringify(first) === JSON.stringify(current) && first.profile.file === current.profile.file
         && first.feed.every((row, index) => row.file === current.feed[index]?.file)
 }
-function adoptCreatedIds(draft: SiteEditDraft, submitted: SiteEditDraft, site: SiteData): SiteEditDraft {
+function adoptCreatedIds(draft: Draft, submitted: Draft, site: Character): Draft {
     return {
         ...draft,
         sections: draft.sections.map(row => {
@@ -132,7 +132,7 @@ function adoptCreatedIds(draft: SiteEditDraft, submitted: SiteEditDraft, site: S
         }),
     }
 }
-export async function createCharacter(draft: SiteEditDraft, context: CreationContext, canWrite: WriteGuard = allowWrite): Promise<SaveResult> {
+export async function createCharacter(draft: Draft, context: CreateContext, canWrite: WriteGuard = allowWrite): Promise<SaveResult> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     ensureWrite(canWrite)
     let state = context.state
@@ -148,7 +148,7 @@ export async function createCharacter(draft: SiteEditDraft, context: CreationCon
             } catch (error) { throw writeError(error) }
         }
         const characterId = state.characterId
-        const emptyBaseline: SiteData = {
+        const emptyBaseline: Character = {
             profile: { id: characterId, name: '', status_message: '', profile_image_path: null },
             theme: { id: characterId, main_color: '', background_color: '', card_background_color: '', typo_color: '' },
             sections: [], keywords: [], feed: [],
@@ -168,7 +168,7 @@ export async function createCharacter(draft: SiteEditDraft, context: CreationCon
         const characterId = pending.characterId
         if (!isCharacterId(characterId)) throw new Error('새 캐릭터 예약 정보를 확인해 주세요.')
         let attempted = false
-        let site: SiteData
+        let site: Character
         try {
             ensureWrite(canWrite)
             attempted = true
@@ -180,9 +180,9 @@ export async function createCharacter(draft: SiteEditDraft, context: CreationCon
             // validation rejection cannot disprove an earlier unknown commit.
             if (attempted && !isDefiniteRejection(error)) context.state = { ...pending, phase: 'uncertain' }
             if (pending.phase !== 'uncertain' && isDefiniteRejection(error) && record(error) && !['42501', 'PGRST202'].includes(String(error.code))) {
-                queueImageCleanup(pending.uploadPaths, characterId)
+                queueCleanup(pending.uploadPaths, characterId)
                 context.state = { phase: 'reserved', characterId }
-                if (canWrite()) await retryImageCleanup(canWrite)
+                if (canWrite()) await retryCleanup(canWrite)
             }
             throw writeError(error)
         }
@@ -197,10 +197,10 @@ export async function createCharacter(draft: SiteEditDraft, context: CreationCon
     }
     return cleanedResult(site, [], characterId, canWrite)
 }
-export async function deleteCharacter(characterId: number, expected: SiteData, canWrite: WriteGuard = allowWrite): Promise<{ cleanupWarning: string | null }> {
+export async function deleteCharacter(characterId: number, expected: Character, canWrite: WriteGuard = allowWrite): Promise<{ cleanupWarning: string | null }> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     ensureWrite(canWrite)
-    if (!isCharacterId(characterId) || !isSiteData(expected) || expected.profile.id !== characterId) throw new Error('삭제할 캐릭터를 확인해 주세요.')
+    if (!isCharacterId(characterId) || !isCharacter(expected) || expected.profile.id !== characterId) throw new Error('삭제할 캐릭터를 확인해 주세요.')
     let candidates: string[]
     try {
         ensureWrite(canWrite)
@@ -209,7 +209,7 @@ export async function deleteCharacter(characterId: number, expected: SiteData, c
         if (!record(data) || data.character_id !== characterId || !cleanupPaths(data.cleanup_candidates, imagePaths(expected))) throw new Error('invalid_delete_response')
         candidates = data.cleanup_candidates
     } catch (error) { throw writeError(error) }
-    queueImageCleanup(candidates, characterId)
-    const cleaned = canWrite() && await retryImageCleanup(canWrite)
-    return { cleanupWarning: cleaned ? null : imageCleanupWarning('캐릭터는 삭제됐지만 이미지 정리가 남아 있습니다. 다시 시도해 주세요.') }
+    queueCleanup(candidates, characterId)
+    const cleaned = canWrite() && await retryCleanup(canWrite)
+    return { cleanupWarning: cleaned ? null : cleanupMessage('캐릭터는 삭제됐지만 이미지 정리가 남아 있습니다. 다시 시도해 주세요.') }
 }

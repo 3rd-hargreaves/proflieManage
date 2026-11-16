@@ -15,7 +15,7 @@ export function resolveRoute(path: string): PageRoute {
 }
 
 export const characterPath = (id: number) => `/characters/${id}`
-export const characterEditPath = (id: number) => `${characterPath(id)}/edit`
+export const editPath = (id: number) => `${characterPath(id)}/edit`
 
 export function isEditorPath(path: string): boolean {
     const route = resolveRoute(path)
