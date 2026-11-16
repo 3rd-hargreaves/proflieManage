@@ -193,6 +193,8 @@ describe('authorization and write failures', () => {
             [{ code: 'PGRST202', message: 'Function unavailable' }, '아직 준비'],
             [{ code: '22023', message: 'invalid_input' }, '올바르지'],
             [{ code: 'P0001', message: 'main_theme_not_found' }, '존재하지'],
+            [{ code: '22023', message: 'character_order_conflict' }, '다른 창'],
+            [{ code: '42501', message: 'character_writes_disabled' }, '일시 중지'],
         ])(`${action.name}: keeps the caller draft on server rejection %j`, async (error, text) => {
             api.rpc.mockResolvedValue({ data: null, error })
             await expect(action.run()).rejects.toThrow(text)

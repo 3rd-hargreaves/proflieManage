@@ -5,11 +5,11 @@ import type { SiteSaveData } from '../utils/siteDraft'
 import { isCharacterId, isSiteData } from '../utils/siteData'
 import { isCleanupPath } from '../utils/cleanupJournal'
 import { imageCleanupWarning, queueImageCleanup, retryImageCleanup, uploadImage, validateImageFile } from './storage'
+import { allowWrite, ensureWrite, writeError } from './write'
+import type { WriteGuard } from './write'
 
 export { getPendingImageCleanupCount } from './storage'
 export interface SaveResult { site: SiteData, cleanupWarning: string | null }
-type WriteGuard = () => boolean
-const allowed = () => true
 export interface CreationContext {
     requestId: string
     characterId: number | null
@@ -22,21 +22,6 @@ export interface CreationContext {
 }
 export function createCharacterContext(): CreationContext {
     return { requestId: crypto.randomUUID(), characterId: null, pendingPayload: null, pendingUploadPaths: [], creationUncertain: false, submittedDraft: null, savedDraft: null, confirmedSite: null }
-}
-function ensureWrite(canWrite: WriteGuard) {
-    if (!canWrite()) throw new Error('로그인 상태가 변경되었습니다. 입력한 내용은 유지됩니다. 다시 로그인해 주세요.')
-}
-function errorMessage(error: unknown): string {
-    if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-        if (error.message.includes('feed_limit_exceeded')) return '피드 이미지 등록 한도를 초과했습니다. 최신 목록을 확인하고 사진 수를 줄여 다시 저장해 주세요.'
-        if (error.message.includes('conflict')) return '다른 창에서 내용이 변경되었거나 이전 저장 결과와 충돌했습니다. 입력한 내용은 유지됩니다. 최신 내용을 확인한 뒤 다시 시도해 주세요.'
-        if (error.message.includes('character_not_found')) return '캐릭터가 삭제되었거나 존재하지 않습니다. 입력한 내용은 유지됩니다.'
-        if (error.message.includes('writes_disabled')) return '현재 저장 기능이 일시 중지되어 있습니다. 입력한 내용은 유지됩니다. 잠시 후 다시 시도해 주세요.'
-        if (error.message.includes('admin_required') || ('code' in error && error.code === '42501')) return '저장 권한이 없습니다. 관리자 계정으로 다시 로그인해 주세요.'
-        if (('code' in error && ['22023', '23514', '23503', '23505'].includes(String(error.code))) || error.message.includes('invalid_character')) return '저장할 내용이나 이미지가 올바르지 않습니다. 입력값을 확인한 뒤 다시 저장해 주세요.'
-        if ('code' in error && error.code === 'PGRST202') return '데이터베이스 저장 기능이 아직 준비되지 않았습니다. 입력한 내용은 유지됩니다.'
-    }
-    return '저장 결과를 확인하지 못했습니다. 입력한 내용은 유지됩니다. 연결 상태를 확인한 뒤 같은 내용으로 다시 시도해 주세요.'
 }
 function isDefiniteRejection(error: unknown): boolean {
     return !!error && typeof error === 'object' && 'code' in error
@@ -104,7 +89,7 @@ async function uploadData(draft: SiteEditDraft, expected: SiteData, characterId:
     }
     return { payload: buildSaveData(draft, expected, { profile, feed }), newPaths }
 }
-export async function saveCharacter(characterId: number, draft: SiteEditDraft, expected: SiteData, canWrite: WriteGuard = allowed): Promise<SaveResult> {
+export async function saveCharacter(characterId: number, draft: SiteEditDraft, expected: SiteData, canWrite: WriteGuard = allowWrite): Promise<SaveResult> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     ensureWrite(canWrite)
     if (!isCharacterId(characterId) || !isSiteData(expected) || expected.profile.id !== characterId) throw new Error('수정할 캐릭터를 확인해 주세요.')
@@ -121,7 +106,7 @@ export async function saveCharacter(characterId: number, draft: SiteEditDraft, e
             queueImageCleanup(newPaths, characterId)
             if (canWrite()) await retryImageCleanup(canWrite)
         }
-        throw new Error(errorMessage(error), { cause: error })
+        throw writeError(error)
     }
     const retained = imagePaths(envelope.character)
     const candidates = new Set([...envelope.cleanup_candidates, ...Array.from(imagePaths(expected)).filter(path => !retained.has(path))])
@@ -147,7 +132,7 @@ function adoptCreatedIds(draft: SiteEditDraft, submitted: SiteEditDraft, site: S
         }),
     }
 }
-export async function createCharacter(draft: SiteEditDraft, context: CreationContext, canWrite: WriteGuard = allowed): Promise<SaveResult> {
+export async function createCharacter(draft: SiteEditDraft, context: CreationContext, canWrite: WriteGuard = allowWrite): Promise<SaveResult> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     ensureWrite(canWrite)
     if (!context.pendingPayload && !context.confirmedSite) {
@@ -159,7 +144,7 @@ export async function createCharacter(draft: SiteEditDraft, context: CreationCon
                 if (error) throw error
                 if (!isCharacterId(data)) throw new Error('invalid_reservation_response')
                 context.characterId = data
-            } catch (error) { throw new Error(errorMessage(error), { cause: error }) }
+            } catch (error) { throw writeError(error) }
         }
         const emptyBaseline: SiteData = {
             profile: { id: context.characterId, name: '', status_message: '', profile_image_path: null },
@@ -197,7 +182,7 @@ export async function createCharacter(draft: SiteEditDraft, context: CreationCon
                 context.submittedDraft = null
                 if (canWrite()) await retryImageCleanup(canWrite)
             }
-            throw new Error(errorMessage(error), { cause: error })
+            throw writeError(error)
         }
     }
     const site = context.confirmedSite
@@ -210,7 +195,7 @@ export async function createCharacter(draft: SiteEditDraft, context: CreationCon
     }
     return cleanedResult(site, [], characterId, canWrite)
 }
-export async function deleteCharacter(characterId: number, expected: SiteData, canWrite: WriteGuard = allowed): Promise<{ cleanupWarning: string | null }> {
+export async function deleteCharacter(characterId: number, expected: SiteData, canWrite: WriteGuard = allowWrite): Promise<{ cleanupWarning: string | null }> {
     if (!supabase) throw new Error('사이트 연결 설정을 확인해 주세요.')
     ensureWrite(canWrite)
     if (!isCharacterId(characterId) || !isSiteData(expected) || expected.profile.id !== characterId) throw new Error('삭제할 캐릭터를 확인해 주세요.')
@@ -221,7 +206,7 @@ export async function deleteCharacter(characterId: number, expected: SiteData, c
         if (error) throw error
         if (!record(data) || data.character_id !== characterId || !cleanupPaths(data.cleanup_candidates, imagePaths(expected))) throw new Error('invalid_delete_response')
         candidates = data.cleanup_candidates
-    } catch (error) { throw new Error(errorMessage(error), { cause: error }) }
+    } catch (error) { throw writeError(error) }
     queueImageCleanup(candidates, characterId)
     const cleaned = canWrite() && await retryImageCleanup(canWrite)
     return { cleanupWarning: cleaned ? null : imageCleanupWarning('캐릭터는 삭제됐지만 이미지 정리가 남아 있습니다. 다시 시도해 주세요.') }

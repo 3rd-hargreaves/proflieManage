@@ -203,6 +203,38 @@ describe('character save boundaries',()=>{
         await expect(saveCharacter(1,draft,expected)).rejects.toThrow('다른 창')
         expect(api.upload).toHaveBeenCalledTimes(1);expect(api.remove).not.toHaveBeenCalled();expect(getPendingImageCleanupCount()).toBe(0)
     })
+    it('does not treat a displayed conflict as proof that uploaded images were rolled back',async()=>{
+        const {saveCharacter,getPendingImageCleanupCount}=await import('../src/services/save');const {draft,expected}=fixture();draft.profile.file=png()
+        const error={code:'P0001',message:'unrecognized_character_conflict'}
+        api.write.mockResolvedValueOnce({data:null,error})
+        const request=saveCharacter(1,draft,expected)
+        await expect(request).rejects.toThrow('다른 창')
+        await expect(request).rejects.toMatchObject({cause:error})
+        expect(api.upload).toHaveBeenCalledTimes(1);expect(api.remove).not.toHaveBeenCalled();expect(getPendingImageCleanupCount()).toBe(0)
+    })
+    it.each([
+        [{code:'22023',message:'feed_limit_exceeded'},'피드 이미지 등록 한도'],
+        [{code:'42501',message:'character_conflict'},'다른 창'],
+        [{code:'42501',message:null},'저장 결과를 확인하지 못했습니다'],
+        [new TypeError('response lost'),'저장 결과를 확인하지 못했습니다'],
+    ])('preserves character error guidance, priority and original cause for %j',async(error,text)=>{
+        const {saveCharacter}=await import('../src/services/save');const {draft,expected}=fixture()
+        const before=structuredClone(draft);const baseline=structuredClone(expected)
+        api.write.mockResolvedValueOnce({data:null,error})
+        const request=saveCharacter(1,draft,expected)
+        await expect(request).rejects.toThrow(text as string)
+        await expect(request).rejects.toMatchObject({cause:error})
+        expect(draft).toEqual(before);expect(expected).toEqual(baseline)
+    })
+    it.each(['save','create','delete'] as const)('blocks %s before reservation, upload or write when the guard denies it',async(action)=>{
+        const {saveCharacter,createCharacter,createCharacterContext,deleteCharacter}=await import('../src/services/save')
+        const {draft,expected}=fixture();draft.profile.file=png()
+        const guard=()=>false
+        const request=action==='save'?saveCharacter(1,draft,expected,guard)
+            :action==='create'?createCharacter(newDraft(),createCharacterContext(),guard):deleteCharacter(1,expected,guard)
+        await expect(request).rejects.toThrow('로그인 상태가 변경되었습니다. 입력한 내용은 유지됩니다. 다시 로그인해 주세요.')
+        expect(api.rpc).not.toHaveBeenCalled();expect(api.upload).not.toHaveBeenCalled();expect(api.remove).not.toHaveBeenCalled()
+    })
 })
 describe('creation and deletion retries',()=>{
     it.each(['42501','22023','23514'])('keeps an uncertain creation payload across a later %s rejection',async(code)=>{
