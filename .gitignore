@@ -12,6 +12,9 @@ dist
 dist-ssr
 .vitest/
 coverage/
+supabase/backups/
+supabase/.temp/
+supabase/.branches/
 *.local
 .env
 .env.*
