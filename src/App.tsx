@@ -7,7 +7,7 @@ import LoginModal from './components/LoginModal'
 import { useGuardedNavigation } from './hooks/useGuardedNavigation'
 import { authConfigurationError, supabase } from './lib/supabase'
 import { getAdminUser, signOut } from './services/auth'
-import { isEditorPath, resolveRoute } from './utils/routes'
+import { characterEditPath, isEditorPath, resolveRoute } from './utils/routes'
 
 const EditPage = lazy(() => import('./pages/EditPage'))
 const NewCharacterPage = lazy(() => import('./pages/NewCharacterPage'))
@@ -32,6 +32,7 @@ export default function App() {
     const [signingOut, setSigningOut] = useState(false)
     const [logoutError, setLogoutError] = useState<string | null>(null)
     const [editorBusy, setEditorBusy] = useState(false)
+    const [loadedCharacter, setLoadedCharacter] = useState<number | null>(null)
     const active = useRef(false)
     const epoch = useRef(0)
     const verification = useRef<{ epoch: number, promise: Promise<User | null> } | null>(null)
@@ -136,11 +137,10 @@ export default function App() {
     }
 
     const notFound = route.page === 'notFound'
-        || ((route.page === 'character' || route.page === 'edit') && route.characterId !== '1')
     function content() {
         if (notFound) return <main><p className="card pdLg text3">캐릭터를 찾을 수 없습니다.</p></main>
         if (route.page === 'main') return <MainPage isAdmin={isAdmin} navigate={navigate} />
-        if (route.page === 'character') return <CharacterPage />
+        if (route.page === 'character') return <CharacterPage key={`character-${route.characterId}`} characterId={route.characterId} onLoaded={setLoadedCharacter} />
         if (!auth.user) return (
             <main>
                 <div className="card pdLg flexColumn gapMd">
@@ -153,13 +153,14 @@ export default function App() {
         return (
             <Suspense fallback={<main><p className="card pdLg text3" role="status">수정 화면을 불러오는 중…</p></main>}>
                 {route.page === 'new' ? (
-                    <NewCharacterPage authBlocked={!isAdmin || signingOut} onLeaveGuardChange={setLeaveGuard} />
-                ) : (
-                    <EditPage signingOut={signingOut} onBusyChange={setEditorBusy}
+                    <NewCharacterPage key="new" authBlocked={!isAdmin || signingOut} onLeaveGuardChange={setLeaveGuard} />
+                ) : route.page === 'edit' ? (
+                    <EditPage key={`edit-${route.characterId}`} characterId={route.characterId}
+                        signingOut={signingOut} onBusyChange={setEditorBusy}
                         authNotice={authNotice} onRetryAuth={() => void verifyUser()}
                         onReauthenticate={() => setReauthOpen(true)} onExit={() => { navigate('/') }}
                         onLeaveGuardChange={setLeaveGuard} canWrite={canWrite} />
-                )}
+                ) : null}
             </Suspense>
         )
     }
@@ -175,7 +176,7 @@ export default function App() {
     }
     return (
         <>
-            <SiteHeader isAdmin={isAdmin} showEditor={route.page === 'character' && !notFound}
+            <SiteHeader isAdmin={isAdmin} editHref={route.page === 'character' && loadedCharacter === route.characterId ? characterEditPath(route.characterId) : undefined}
                 busy={auth.status === 'checking' || (isEdit && editorBusy)} signingOut={signingOut}
                 navigate={navigate} onLogin={() => setReauthOpen(true)} onLogout={() => void logout()} />
             {logoutError && <p className="card pdLg" role="alert">{logoutError}</p>}

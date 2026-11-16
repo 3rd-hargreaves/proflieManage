@@ -7,9 +7,14 @@ import SectionContent from '../components/SectionContent'
 import { getImageUrl } from '../services/storage'
 import type { SiteData } from '../types/site'
 import { applyTheme } from '../utils/theme'
-import { useSiteQuery } from '../hooks/useSiteQuery'
+import { useCharacterQuery } from '../hooks/useSiteQuery'
 
-export default function CharacterPage() {
+interface CharacterPageProps {
+    characterId: number
+    onLoaded: (id: number | null) => void
+}
+
+export default function CharacterPage({ characterId, onLoaded }: CharacterPageProps) {
     const [modal, setModal] = useState<GalleryImage | null>(null)
     const closeModal = useCallback(() => setModal(null), [])
 
@@ -19,14 +24,19 @@ export default function CharacterPage() {
         return () => { document.title = previousTitle }
     }, [])
 
-    const showSite = useCallback((site: SiteData) => {
+    const showSite = useCallback((site: SiteData | null) => {
+        if (!site) return
         const restoreTheme = applyTheme(site.theme)
         document.title = site.profile.name
         return restoreTheme
     }, [])
-    const { state: siteState, reload } = useSiteQuery({ onLoad: showSite })
+    const { state: siteState, reload } = useCharacterQuery(characterId, { onLoad: showSite })
 
     const site = siteState.status === 'ready' ? siteState.data : null
+    useEffect(() => {
+        onLoaded(site?.profile.id ?? null)
+        return () => onLoaded(null)
+    }, [site, onLoaded])
     const images: GalleryImage[] = site ? site.feed.map((image, index) => ({
         id: String(image.id),
         src: getImageUrl(image.image_path),
@@ -37,6 +47,7 @@ export default function CharacterPage() {
         <>
             <main className="flexColumn gapLg" aria-busy={siteState.status === 'loading'}>
                 {siteState.status === 'loading' && <p className="card pdLg text3" role="status">불러오는 중…</p>}
+                {siteState.status === 'ready' && !site && <p className="card pdLg text3" role="status">캐릭터를 찾을 수 없습니다.</p>}
                 {siteState.status === 'error' && (
                     <div className="card pdLg flexColumn gapMd">
                         <p className="text3" role="alert">{siteState.message}</p>

@@ -1,63 +1,97 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { loadSite } from '../services/site'
-import type { SiteData } from '../types/site'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { loadCharacter, loadMain } from '../services/site'
+import type { MainData, SiteData } from '../types/site'
 
-export type SiteQueryState =
+export type SiteQueryState<T> =
     | { status: 'loading' }
     | { status: 'error', message: string }
-    | { status: 'ready', data: SiteData }
+    | { status: 'ready', data: T }
 
-interface SiteQueryOptions {
-    onLoad?: (site: SiteData) => void | (() => void)
+interface QueryCallbacks<T> {
+    onLoad?: (data: T) => void | (() => void)
     errorMessage?: string
 }
 
-export function useSiteQuery({ onLoad, errorMessage = '로드 실패' }: SiteQueryOptions = {}) {
-    const [state, setState] = useState<SiteQueryState>({ status: 'loading' })
+interface SiteQueryOptions<T> extends QueryCallbacks<T> {
+    queryKey: string
+    load: (signal: AbortSignal) => Promise<T>
+}
+
+interface ActiveQuery {
+    controller: AbortController
+    restore?: () => void
+}
+
+export function useSiteQuery<T>({ queryKey, load, onLoad, errorMessage = '로드 실패' }: SiteQueryOptions<T>) {
+    const [result, setResult] = useState<{ key: string, attempt: number, state: SiteQueryState<T> }>(
+        () => ({ key: queryKey, attempt: 0, state: { status: 'loading' } }),
+    )
     const [attempt, setAttempt] = useState(0)
-    const activeRequest = useRef<AbortController | null>(null)
-    const options = useRef({ onLoad, errorMessage })
+    const activeQuery = useRef<ActiveQuery | null>(null)
+    const options = useRef({ load, onLoad, errorMessage })
 
-    useEffect(() => {
-        options.current = { onLoad, errorMessage }
-    }, [onLoad, errorMessage])
+    useLayoutEffect(() => {
+        options.current = { load, onLoad, errorMessage }
+    }, [load, onLoad, errorMessage])
 
-    const reload = useCallback(() => {
-        // Invalidate the old response before React commits the retry render.
-        activeRequest.current?.abort()
-        setState({ status: 'loading' })
-        setAttempt(value => value + 1)
+    const stopActiveQuery = useCallback(() => {
+        const active = activeQuery.current
+        if (!active) return
+        activeQuery.current = null
+        active.controller.abort()
+        active.restore?.()
+        active.restore = undefined
     }, [])
 
-    useEffect(() => {
-        const controller = new AbortController()
-        activeRequest.current = controller
-        let restore: (() => void) | undefined
+    // Restore theme effects and invalidate the old request before a new key paints.
+    useLayoutEffect(() => () => stopActiveQuery(), [queryKey, attempt, stopActiveQuery])
 
-        async function load() {
+    const reload = useCallback(() => {
+        stopActiveQuery()
+        setAttempt(value => value + 1)
+    }, [stopActiveQuery])
+
+    useEffect(() => {
+        const active: ActiveQuery = { controller: new AbortController() }
+        activeQuery.current = active
+        const { signal } = active.controller
+        const loader = options.current.load
+        const publish = (state: SiteQueryState<T>) => {
+            if (signal.aborted || activeQuery.current !== active) return
+            setResult({ key: queryKey, attempt, state })
+        }
+
+        async function run() {
             try {
-                const data = await loadSite(controller.signal)
-                if (controller.signal.aborted) return
-                const cleanup = options.current.onLoad?.(data)
-                if (typeof cleanup === 'function') restore = cleanup
-                setState({ status: 'ready', data })
+                const data = await loader(signal)
+                if (signal.aborted || activeQuery.current !== active) return
+                const restore = options.current.onLoad?.(data)
+                if (typeof restore === 'function') active.restore = restore
+                publish({ status: 'ready', data })
             } catch (error) {
-                if (controller.signal.aborted) return
-                controller.abort()
-                setState({
-                    status: 'error',
-                    message: error instanceof Error ? error.message : options.current.errorMessage,
-                })
+                if (signal.aborted || activeQuery.current !== active) return
+                active.restore?.()
+                active.restore = undefined
+                publish({ status: 'error', message: error instanceof Error ? error.message : options.current.errorMessage })
             }
         }
 
-        void load()
+        void run()
         return () => {
-            controller.abort()
-            if (activeRequest.current === controller) activeRequest.current = null
-            restore?.()
+            active.controller.abort()
+            if (activeQuery.current === active) stopActiveQuery()
         }
-    }, [attempt])
+    }, [queryKey, attempt, stopActiveQuery])
 
+    const state: SiteQueryState<T> = result.key === queryKey && result.attempt === attempt
+        ? result.state : { status: 'loading' }
     return { state, reload }
+}
+
+export function useMainQuery(options: QueryCallbacks<MainData> = {}) {
+    return useSiteQuery({ ...options, queryKey: 'main', load: loadMain })
+}
+
+export function useCharacterQuery(characterId: number, options: QueryCallbacks<SiteData | null> = {}) {
+    return useSiteQuery({ ...options, queryKey: `character:${characterId}`, load: signal => loadCharacter(characterId, signal) })
 }

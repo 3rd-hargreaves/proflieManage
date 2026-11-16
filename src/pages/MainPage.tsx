@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import SiteImage from '../components/SiteImage'
 import SiteLink from '../components/SiteLink'
 import ThemeEditor from '../components/ThemeEditor'
-import { useSiteQuery } from '../hooks/useSiteQuery'
+import { useMainQuery } from '../hooks/useSiteQuery'
 import { getImageUrl } from '../services/storage'
-import { applyTheme, toThemeData } from '../utils/theme'
+import { applyTheme, toThemeColors, toThemeData } from '../utils/theme'
+import type { MainData, ThemeColors } from '../types/site'
+import { characterPath } from '../utils/routes'
 import { isHexColor } from '../utils/validation'
 
 interface MainPageProps {
@@ -12,13 +14,11 @@ interface MainPageProps {
     navigate: (path: string) => void
 }
 
-// Main theme storage is introduced in the database migration, separately from the profile theme.
-const initialTheme = { mainColor: '#E45C9A', backgroundColor: '#FDE8F0', cardBackgroundColor: '#FFFFFF', typoColor: '#26232A' }
-
 export default function MainPage({ isAdmin, navigate }: MainPageProps) {
-    const { state, reload } = useSiteQuery()
-    const [theme, setTheme] = useState(initialTheme)
-    const preview = isAdmin ? theme : initialTheme
+    const [theme, setTheme] = useState<ThemeColors | null>(null)
+    const showMain = useCallback((data: MainData) => setTheme(toThemeColors(data.theme)), [])
+    const { state, reload } = useMainQuery({ onLoad: showMain })
+    const savedTheme = state.status === 'ready' ? state.data.theme : null
 
     useEffect(() => {
         const previous = document.title
@@ -26,12 +26,12 @@ export default function MainPage({ isAdmin, navigate }: MainPageProps) {
         return () => { document.title = previous }
     }, [])
     useEffect(() => {
-        if (!Object.values(preview).every(isHexColor)) return
-        return applyTheme({ id: 1, ...toThemeData(preview) })
-    }, [preview])
+        if (!savedTheme) return
+        return applyTheme(isAdmin && theme && Object.values(theme).every(isHexColor)
+            ? { id: 1, ...toThemeData(theme) } : savedTheme)
+    }, [savedTheme, isAdmin, theme])
 
-    // Until migration, the existing single profile supplies one real card; no demo characters are saved.
-    const characters = state.status === 'ready' ? [state.data.profile] : []
+    const characters = state.status === 'ready' ? state.data.characters : []
 
     return (
         <main className="flexColumn gapLg" aria-busy={state.status === 'loading'}>
@@ -43,7 +43,7 @@ export default function MainPage({ isAdmin, navigate }: MainPageProps) {
                 </div>
             )}
             {characters.map(character => (
-                <SiteLink key={character.id} className="character card flex pdLg gapMd" href={`/characters/${character.id}`} navigate={navigate}>
+                <SiteLink key={character.id} className="character card flex pdLg gapMd" href={characterPath(character.id)} navigate={navigate}>
                     <SiteImage className="profileImg" src={getImageUrl(character.profile_image_path)} alt={`${character.name} 프로필 이미지`} fallbackText={character.profile_image_path ? undefined : '이미지 없음'} />
                     <div className="flexColumn gapSm">
                         <p className="text1 bold">{character.name}</p>
@@ -57,9 +57,9 @@ export default function MainPage({ isAdmin, navigate }: MainPageProps) {
                     <p className="text3">드래그 앤 드롭으로 순서 변경</p>
                     <button className="btn h30 border borderRad widthFull" type="button" disabled>순서 저장</button>
                     <SiteLink className="btn h30 border borderRad widthFull flex alignCenter justifyCenter" href="/characters/new" navigate={navigate}>캐릭터 추가</SiteLink>
-                    <ThemeEditor title="메인 테마" value={theme} onChange={(key, value) => setTheme(previous => ({ ...previous, [key]: value }))}>
+                    {state.status === 'ready' && theme && <ThemeEditor title="메인 테마" value={theme} onChange={(key, value) => setTheme(previous => previous && ({ ...previous, [key]: value }))}>
                         <button className="btn h30 border borderRad widthFull" type="button" disabled>테마 저장</button>
-                    </ThemeEditor>
+                    </ThemeEditor>}
                     <p className="text3">순서 변경과 메인 테마 저장은 준비 중입니다. 테마 색상은 미리 볼 수 있습니다.</p>
                 </>
             )}
