@@ -355,6 +355,11 @@ try {
     acceptDialog = true; await spa('/characters/1/edit'); acceptDialog = false
     await until(`document.querySelector('#profileName')?.value==='첫 캐릭터'`, 'editor id switch')
     check(await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src.includes('/profile/1/image.png') && window.__revoked.includes(${JSON.stringify(preview)})`) && await selectedColor() === initial(1).theme.main_color, '다른 ID 수정으로 전환하면 이전 File·URL·테마·초안 정리')
+    await button('^섹션 추가$')
+    await until(`document.querySelectorAll('[data-section]').length===3 && document.activeElement===[...document.querySelectorAll('[data-section] input')].at(-1)`, 'existing editor new section focus')
+    check(await js(`document.activeElement.value==='' && [...document.querySelectorAll('[data-section] textarea')].at(-1).value===''`), '기존 수정에서 섹션 추가 시 빈 제목·내용과 새 제목 포커스 유지')
+    await nativeClick('#sections .sortableItem:last-child [data-section] > button:last-child')
+    await until(`document.querySelectorAll('[data-section]').length===2`, 'remove temporary editor section')
     await focus('[data-section] .dragHandle'); await key('Space', ' '); await key('ArrowDown'); await key('Space', ' ')
     check(await js(`document.querySelector('[data-section] input').value==='캐릭터 1 둘째 섹션'`), '로컬 편집의 키보드 섹션 정렬 유지')
     await js(`document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`)
@@ -365,8 +370,18 @@ try {
     await nativeClick('a[href="/characters/new"]'); await until(`!!document.querySelector('#profileName')`, 'new blank form')
     check(await js(`document.querySelector('#profileName').value==='' && document.querySelector('#profileMessage').value==='' && document.querySelector('#keywords').value==='' && document.querySelectorAll('[data-section]').length===0 && !document.querySelector('button[type=submit]').matches(':disabled')`), '신규 폼은 빈 정보·목록으로 열리고 저장 검증 가능')
     check(await selectedColor() === mainTheme.main_color, '신규 폼 초기 테마가 저장된 메인 테마를 복사')
-    await set('#profileName', '새 초안'); await button('^섹션 추가$'); await selectFile('#profileFile')
+    await set('#profileName', '새 초안'); await button('^섹션 추가$')
+    await until(`document.activeElement===document.querySelector('[data-section] input')`, 'new editor section focus')
+    check(await js(`document.activeElement.value==='' && document.querySelector('[data-section] textarea').value===''`), '신규 작성도 섹션 추가 시 빈 제목·내용과 새 제목 포커스 유지')
+    await selectFile('#profileFile')
     check(await js(`document.querySelectorAll('[data-section]').length===1 && document.querySelector('img[alt="프로필 이미지 미리보기"]').src.startsWith('blob:')`), '신규 폼의 로컬 섹션·File 미리보기 유지')
+    const newPreview = await js(`document.querySelector('img[alt="프로필 이미지 미리보기"]').src`)
+    const newReservationStart = writeCalls('reserve_character_id').length, newWriteStart = writeCalls('create_character').length
+    mode.userStatus = 503; await refresh(); await until(`document.body.innerText.includes('로그인 상태 확인 실패')`, 'new editor auth recheck failure')
+    check(await js(`document.querySelector('fieldset').disabled && document.querySelector('#profileName').value==='새 초안' && document.querySelectorAll('[data-section]').length===1 && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(newPreview)}`), '신규 인증 재확인 실패에도 텍스트·추가 섹션·File을 유지하고 편집 잠금')
+    mode.userStatus = 200; await button('다시 확인'); await until(`!document.querySelector('fieldset').disabled`, 'new editor auth recovery')
+    check(await js(`document.querySelector('#profileName').value==='새 초안' && document.querySelectorAll('[data-section]').length===1 && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(newPreview)}`)
+        && writeCalls('reserve_character_id').length === newReservationStart && writeCalls('create_character').length === newWriteStart, '신규 인증 복구가 빈 폼으로 초기화하거나 자동 예약·생성하지 않음')
     await nativeClick('.homeButton'); await pause(80)
     check(await js(`location.pathname==='/characters/new' && document.querySelector('#profileName').value==='새 초안'`), '신규 작성 이탈 취소 시 초안 유지')
     acceptDialog = true; await nativeClick('.homeButton'); acceptDialog = false
@@ -390,6 +405,9 @@ try {
     check(requests.filter(r => r.uploadBytes).every(r => r.uploadBytes.includes(image)), '이미지는 재인코딩하지 않고 선택한 원본 바이트로 업로드')
     check(sites.get(2).sections[0].content === '  *저장 원문*\n_그대로_  ' && sites.get(2).sections[0].id === 210, '기존 섹션 ID와 서식 원문 공백을 보존')
     check(!objects.has('profile/2/image.png') && objects.has('profile/1/image.png'), '확정 저장 후 미사용 이전 이미지만 정리')
+    check(await js(`!document.querySelector('img[alt="프로필 이미지 미리보기"]').src.startsWith('blob:') && !(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented})()`), '확정 수정 저장 후 서버 이미지로 전환하고 초안 이탈 경고 해제')
+    await set('#profileName', '저장 후 다시 편집')
+    check(await js(`!document.body.innerText.includes('저장 성공') && (()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented})()`), '저장 후 재편집하면 성공 안내를 지우고 미저장 보호 재등록')
 
     await reset(true, '/characters/2/edit')
     const invalidStart = writeCalls('save_character').length
@@ -409,7 +427,15 @@ try {
     mode.saveFailure = 'character_conflict'; await submit()
     await until(`document.body.innerText.includes('다른 창') && !document.querySelector('fieldset').disabled`, 'CAS conflict')
     check(await js(`document.querySelector('#profileName').value==='충돌 보존' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(conflictPreview)}`), 'CAS 충돌에도 텍스트·선택 File 초안 유지')
+    await button('편집 내용을 버리고 DB에서 다시 불러오기'); await pause(80)
+    check(await js(`document.querySelector('#profileName').value==='충돌 보존' && document.querySelector('img[alt="프로필 이미지 미리보기"]').src===${JSON.stringify(conflictPreview)} && !!document.querySelector('[role=alert]')`), '수정 재조회 확인 취소 시 오류·텍스트·File 초안 유지')
     mode.saveFailure = null; await submit(); await until(`document.body.innerText.includes('저장 성공')`, 'conflict corrected retry')
+    await saveReady(); await set('#profileName', '버릴 편집 초안'); await selectFile('#profileFile'); mode.saveFailure = 'character_conflict'; await submit()
+    await until(`!!document.querySelector('[role=alert]') && !document.querySelector('fieldset').disabled`, 'reloadable edit conflict')
+    sites.get(2).profile.name = '서버 최신 이름'
+    acceptDialog = true; await button('편집 내용을 버리고 DB에서 다시 불러오기'); acceptDialog = false
+    await until(`document.querySelector('#profileName')?.value==='서버 최신 이름'`, 'edit confirmed server reload')
+    check(await js(`!document.querySelector('[role=alert]') && !document.body.innerText.includes('저장 성공') && !document.querySelector('img[alt="프로필 이미지 미리보기"]').src.startsWith('blob:') && !(()=>{const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);return event.defaultPrevented})()`), '명시적 수정 재조회 승인 후 최신 데이터·이미지 복원과 오류·미저장 상태 초기화')
 
     await reset(true, '/characters/2/edit'); await set('#profileName', '응답 유실 저장'); await selectFile('#profileFile')
     const lostStart = requests.length; mode.saveDropResponse = true; await submit()

@@ -1,10 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import CharacterFields from '../components/CharacterFields'
-import { applyTheme, themeFields, toThemeData } from '../utils/theme'
-import { isHexColor } from '../utils/validation'
 import { feedImageLimit } from '../utils/uploadLimits'
 import type { LeaveGuard } from '../hooks/useGuardedNavigation'
 import { useSiteEditor } from '../hooks/useSiteEditor'
+import { useEditorPage } from '../hooks/useEditorPage'
 import type { SortLock } from '../utils/sortLock'
 import { reportDraftValidation } from '../utils/formValidation'
 import EditorAuthNotice from '../components/EditorAuthNotice'
@@ -32,22 +31,7 @@ export default function EditPage({ characterId, signingOut, authNotice, onRetryA
         busy, saving, deleting, saveError, reportError, saved, cleanupWarning, clearCleanupWarning, save, remove,
     } = useSiteEditor({ characterId, signingOut, authBlocked: !!authNotice, canWrite, onLeaveGuardChange, workLock, onDeleted })
 
-    useEffect(() => {
-        onBusyChange?.(loading || sorting || busy)
-        return () => onBusyChange?.(false)
-    }, [onBusyChange, loading, sorting, busy])
-
-    useEffect(() => {
-        const previousTitle = document.title
-        document.title = '관리자'
-        return () => { document.title = previousTitle }
-    }, [])
-
-    const theme = draft?.theme
-    useEffect(() => {
-        if (!theme || !themeFields.every(({ key }) => isHexColor(theme[key]))) return
-        return applyTheme({ id: characterId, ...toThemeData(theme) })
-    }, [characterId, theme])
+    useEditorPage({ title: '관리자', theme: draft?.theme, characterId, busy: loading || sorting || busy, onBusyChange })
 
     return (
         <main className="flexColumn gapLg" aria-busy={loading || busy}>

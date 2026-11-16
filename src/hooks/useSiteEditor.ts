@@ -1,11 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { SiteData, SiteEditDraft } from '../types/site'
-import { isEditorDirty } from '../utils/editorDirty'
-import { toDraft } from '../utils/siteDraft'
 import type { LeaveGuard } from './useGuardedNavigation'
 import { useCharacterQuery } from './useSiteQuery'
-import { useSortLock } from './useSortLock'
-import { useEditorWork } from './useEditorWork'
+import { useCharacterDraft } from './useCharacterDraft'
 import { deleteCharacter, saveCharacter } from '../services/save'
 import type { SortLock } from '../utils/sortLock'
 
@@ -19,79 +16,41 @@ interface SiteEditorOptions {
     onDeleted: (warning: string | null) => void
 }
 
-interface EditorData {
-    characterId: number
-    baseline: SiteData | null
-    draft: SiteEditDraft | null
-}
-
 export function useSiteEditor({ characterId, signingOut, authBlocked, canWrite, onLeaveGuardChange, workLock, onDeleted }: SiteEditorOptions) {
-    const current = useRef<EditorData>({ characterId, baseline: null, draft: null })
-    const [editor, setEditor] = useState<EditorData>(() => ({ characterId, baseline: null, draft: null }))
-    const { lock: sortLock, activeListId } = useSortLock()
-    const [focusedSection, setFocusedSection] = useState<string | null>(null)
-    const [editorVersion, setEditorVersion] = useState(0)
     const [saved, setSaved] = useState(false)
     const [cleanupWarning, setCleanupWarning] = useState<string | null>(null)
-    const work = useEditorWork({ workLock, sortLock, blocked: signingOut || authBlocked, canWrite })
-
-    useLayoutEffect(() => {
-        current.current = { characterId, baseline: null, draft: null }
-    }, [characterId])
-
-    useEffect(() => {
-        onLeaveGuardChange(() => isEditorDirty(current.current.baseline, current.current.draft)
-            || sortLock.getOwner() !== null || workLock.getOwner() !== null)
-        return () => onLeaveGuardChange(null)
-    }, [onLeaveGuardChange, sortLock, workLock])
-
+    const editor = useCharacterDraft({ editorKey: characterId, blocked: signingOut || authBlocked, canWrite, onLeaveGuardChange, workLock })
+    const { work, sortLock, getCurrent, accept, reset, isDirty } = editor
     const acceptCharacter = useCallback((site: SiteData | null) => {
-        const next = { characterId, baseline: site, draft: site ? toDraft(site) : null }
-        current.current = next
-        setEditor(next)
-        setFocusedSection(null)
-        setEditorVersion(version => version + 1)
+        accept(site)
         setSaved(false)
-    }, [characterId])
+    }, [accept])
 
     const { state: query, reload: reloadQuery } = useCharacterQuery(characterId, {
         onLoad: acceptCharacter,
         errorMessage: '수정할 정보를 불러오지 못했습니다.',
     })
 
-    const canContinue = work.canContinue
     const reportError = work.reportError
-    const canEdit = useCallback(() => current.current.characterId === characterId
-        && canContinue() && workLock.getOwner() === null, [characterId, canContinue, workLock])
-
-    const change = useCallback((next: SiteEditDraft) => {
-        if (!canEdit() || !current.current.baseline) return
-        current.current = { ...current.current, draft: next }
-        setEditor(current.current)
-        setSaved(false)
-    }, [canEdit])
-
-    const addSection = useCallback(() => {
-        const draft = current.current.draft
-        if (!draft || !canEdit() || sortLock.getOwner() !== null) return
-        const id = crypto.randomUUID()
-        change({ ...draft, sections: [...draft.sections, { id, title: '', content: '' }] })
-        setFocusedSection(id)
-    }, [canEdit, change, sortLock])
+    function change(next: SiteEditDraft) {
+        if (editor.change(next)) setSaved(false)
+    }
+    function addSection() {
+        if (editor.addSection()) setSaved(false)
+    }
 
     const reload = useCallback(() => {
         if (workLock.getOwner() !== null || signingOut || sortLock.getOwner() !== null) return
-        if (isEditorDirty(current.current.baseline, current.current.draft)
+        if (isDirty()
             && !window.confirm('편집 내용을 버리고 DB에서 다시 불러오시겠습니까?')) return
-        current.current = { characterId, baseline: null, draft: null }
-        setEditor(current.current)
+        reset()
         setSaved(false)
         reportError(null)
         reloadQuery()
-    }, [characterId, signingOut, sortLock, reloadQuery, workLock, reportError])
+    }, [signingOut, sortLock, reloadQuery, workLock, reportError, reset, isDirty])
 
     async function save() {
-        const { draft, baseline } = current.current
+        const { draft, baseline } = getCurrent()
         if (!draft || !baseline) return
         await work.run('saving', async guard => {
             const result = await saveCharacter(characterId, draft, baseline, guard)
@@ -103,19 +62,19 @@ export function useSiteEditor({ characterId, signingOut, authBlocked, canWrite, 
     }
 
     async function remove() {
-        const baseline = current.current.baseline
+        const baseline = getCurrent().baseline
         if (!baseline) return
         await work.run('deleting', async guard => {
             if (!window.confirm('이 캐릭터와 모든 내용을 삭제하시겠습니까? 저장하지 않은 변경사항도 사라집니다.')) return
             if (!guard()) return
             const result = await deleteCharacter(characterId, baseline, guard)
             if (!work.isMounted()) return
-            current.current = { characterId, baseline: null, draft: null }
+            reset()
             onDeleted(result.cleanupWarning)
         })
     }
 
-    const visible = query.status === 'ready' && editor.characterId === characterId
+    const visible = query.status === 'ready'
     const baseline = visible ? editor.baseline : null
     const draft = visible ? editor.draft : null
 
@@ -125,11 +84,11 @@ export function useSiteEditor({ characterId, signingOut, authBlocked, canWrite, 
         loading: query.status === 'loading',
         loadError: query.status === 'error' ? query.message : null,
         notFound: query.status === 'ready' && query.data === null,
-        focusedSection: visible ? focusedSection : null,
-        editorVersion,
-        sorting: activeListId !== null,
+        focusedSection: visible ? editor.focusedSection : null,
+        editorVersion: editor.editorVersion,
+        sorting: editor.sorting,
         sortLock,
-        editingDisabled: signingOut || authBlocked || work.busy,
+        editingDisabled: editor.editingDisabled,
         busy: work.busy,
         saving: work.action === 'saving',
         deleting: work.action === 'deleting',
